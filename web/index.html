@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>标书写作 Agent</title>
+    <link rel="stylesheet" href="/web/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">标</div>
+          <div>
+            <div class="brand-title">标书写作 Agent</div>
+            <div class="brand-subtitle">自用本地版</div>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active" data-panel="workspace">工作台</button>
+          <button class="nav-item" data-panel="library">资料库</button>
+          <button class="nav-item" data-panel="results">输出结果</button>
+          <button class="nav-item" data-panel="settings">部署说明</button>
+        </nav>
+      </aside>
+
+      <main class="main">
+        <section class="topbar">
+          <div>
+            <h1>标书生成工作台</h1>
+            <p>上传招标文件，自动完成解读、目录、初稿、合规检查和 Word 导出。</p>
+          </div>
+          <button id="refreshBtn" class="ghost-btn">刷新结果</button>
+        </section>
+
+        <section id="workspace" class="panel active-panel">
+          <form id="runForm" class="upload-layout">
+            <div class="upload-zone required-zone">
+              <label for="tender">招标文件</label>
+              <input id="tender" name="tender" type="file" accept=".doc,.docx,.pdf,.txt,.md" required />
+              <p>支持 DOC、DOCX、PDF、TXT、MD。建议优先使用 Word 或可复制文字的 PDF。</p>
+            </div>
+
+            <div class="upload-grid">
+              <div class="upload-zone">
+                <label for="company">企业资料</label>
+                <input id="company" name="company" type="file" multiple />
+              </div>
+              <div class="upload-zone">
+                <label for="certs">资质证书</label>
+                <input id="certs" name="certs" type="file" multiple />
+              </div>
+              <div class="upload-zone">
+                <label for="cases">企业业绩</label>
+                <input id="cases" name="cases" type="file" multiple />
+              </div>
+              <div class="upload-zone">
+                <label for="history">历史标书</label>
+                <input id="history" name="history" type="file" multiple />
+              </div>
+              <div class="upload-zone">
+                <label for="templates">Word 模板</label>
+                <input id="templates" name="templates" type="file" accept=".docx" multiple />
+              </div>
+            </div>
+
+            <div class="actions">
+              <button id="runBtn" class="primary-btn" type="submit">生成标书</button>
+              <span id="statusText" class="status-text">等待上传</span>
+            </div>
+          </form>
+
+          <div class="workflow">
+            <div><strong>1</strong><span>招标文件解读</span></div>
+            <div><strong>2</strong><span>生成投标目录</span></div>
+            <div><strong>3</strong><span>生成正文初稿</span></div>
+            <div><strong>4</strong><span>合规检查</span></div>
+            <div><strong>5</strong><span>导出 Word</span></div>
+          </div>
+        </section>
+
+        <section id="library" class="panel">
+          <div class="section-header">
+            <h2>本地资料库</h2>
+            <p>资料会保存到项目目录，后续生成时自动检索复用。</p>
+          </div>
+          <div class="library-grid">
+            <div class="library-item"><strong>企业资料</strong><span>公司、法人、经营范围、投标常用表述</span></div>
+            <div class="library-item"><strong>资质证书</strong><span>营业执照、许可证、资质证明</span></div>
+            <div class="library-item"><strong>企业业绩</strong><span>合同摘要、案例、项目经验</span></div>
+            <div class="library-item"><strong>历史标书</strong><span>可复用的服务方案、质量控制、应急预案</span></div>
+            <div class="library-item"><strong>模板</strong><span>可放包含 ZL_INSERT_FULL_BID_BODY 的 .docx</span></div>
+          </div>
+        </section>
+
+        <section id="results" class="panel">
+          <div class="results-layout">
+            <div>
+              <div class="section-header">
+                <h2>项目列表</h2>
+                <p>选择一个项目查看解读、初稿和合规报告。</p>
+              </div>
+              <div id="projectList" class="project-list"></div>
+            </div>
+            <div class="preview">
+              <div class="preview-toolbar">
+                <div id="previewTitle">未选择项目</div>
+                <div id="downloadLinks" class="download-links"></div>
+              </div>
+              <div class="tabs">
+                <button class="tab active" data-doc="report">合规报告</button>
+                <button class="tab" data-doc="outline">投标目录</button>
+                <button class="tab" data-doc="draft">标书初稿</button>
+                <button class="tab" data-doc="analysis">结构化解读</button>
+              </div>
+              <pre id="previewText">生成后可在这里预览结果。</pre>
+            </div>
+          </div>
+        </section>
+
+        <section id="settings" class="panel">
+          <div class="section-header">
+            <h2>部署说明</h2>
+            <p>当前是本地可运行版本，后续可推送到 GitHub 后部署到服务器或容器平台。</p>
+          </div>
+          <div class="deploy-box">
+            <code>python3 web_app.py --host 0.0.0.0 --port 8787</code>
+            <p>生产部署建议加反向代理、HTTPS、访问密码，并把资料目录挂载为持久化磁盘。</p>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script src="/web/app.js"></script>
+  </body>
+</html>
