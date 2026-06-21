@@ -3,132 +3,247 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>标书写作 Agent</title>
+    <title>标书制作 Agent</title>
     <link rel="stylesheet" href="/web/styles.css" />
   </head>
   <body>
-    <div class="shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <div class="brand-mark">标</div>
-          <div>
-            <div class="brand-title">标书写作 Agent</div>
-            <div class="brand-subtitle">自用本地版</div>
-          </div>
-        </div>
-        <nav class="nav">
-          <button class="nav-item active" data-panel="workspace">工作台</button>
-          <button class="nav-item" data-panel="library">资料库</button>
-          <button class="nav-item" data-panel="results">输出结果</button>
-          <button class="nav-item" data-panel="settings">部署说明</button>
-        </nav>
+    <div class="app">
+      <aside class="rail" aria-label="主导航">
+        <button class="rail-item active" data-view="interpret" title="智能解读">
+          <span>⌘</span>
+          <em>智能解读</em>
+        </button>
+        <button class="rail-item" data-view="make" title="标书制作">
+          <span>▤</span>
+          <em>标书制作</em>
+        </button>
+        <button class="rail-item" data-view="check" title="标书合规检查">
+          <span>☑</span>
+          <em>标书合规检查</em>
+        </button>
+        <button class="rail-item" data-view="library" title="资料库">
+          <span>▣</span>
+          <em>资料库</em>
+        </button>
+        <button class="rail-item" data-view="history" title="历史标书库">
+          <span>▧</span>
+          <em>历史标书库</em>
+        </button>
+        <button class="rail-item" data-view="templates" title="标书模版">
+          <span>▥</span>
+          <em>标书模版</em>
+        </button>
+        <button class="rail-item" data-view="outputs" title="输出下载">
+          <span>◫</span>
+          <em>输出下载</em>
+        </button>
+        <div class="rail-spacer"></div>
+        <button class="rail-item rail-bottom" title="收起">
+          <span>»</span>
+        </button>
       </aside>
 
       <main class="main">
-        <section class="topbar">
-          <div>
-            <h1>标书生成工作台</h1>
-            <p>上传招标文件，自动完成解读、目录、初稿、合规检查和 Word 导出。</p>
-          </div>
-          <button id="refreshBtn" class="ghost-btn">刷新结果</button>
-        </section>
-
-        <section id="workspace" class="panel active-panel">
-          <form id="runForm" class="upload-layout">
-            <div class="upload-zone required-zone">
-              <label for="tender">招标文件</label>
-              <input id="tender" name="tender" type="file" accept=".doc,.docx,.pdf,.txt,.md" required />
-              <p>支持 DOC、DOCX、PDF、TXT、MD。建议优先使用 Word 或可复制文字的 PDF。</p>
-            </div>
-
-            <div class="upload-grid">
-              <div class="upload-zone">
-                <label for="company">企业资料</label>
-                <input id="company" name="company" type="file" multiple />
-              </div>
-              <div class="upload-zone">
-                <label for="certs">资质证书</label>
-                <input id="certs" name="certs" type="file" multiple />
-              </div>
-              <div class="upload-zone">
-                <label for="cases">企业业绩</label>
-                <input id="cases" name="cases" type="file" multiple />
-              </div>
-              <div class="upload-zone">
-                <label for="history">历史标书</label>
-                <input id="history" name="history" type="file" multiple />
-              </div>
-              <div class="upload-zone">
-                <label for="templates">Word 模板</label>
-                <input id="templates" name="templates" type="file" accept=".docx" multiple />
-              </div>
-            </div>
-
-            <div class="actions">
-              <button id="runBtn" class="primary-btn" type="submit">生成标书</button>
-              <span id="statusText" class="status-text">等待上传</span>
+        <section id="interpret" class="view active-view">
+          <div class="crumbs"><span class="crumb-pill">智能解读</span><span>智能解读</span></div>
+          <form id="interpretForm" class="upload-band" enctype="multipart/form-data">
+            <h2>上传招标文件</h2>
+            <p>支持的格式： .DOC、.DOCX、.PDF、.ZIP、.RAR； 单文件不超过 50MB</p>
+            <p>推荐使用 Word（.doc / .docx）：章节与排版识别更稳定，生成标书效果更好。扫描件 PDF（纯图片、无法选中文字）暂不支持智能解读。</p>
+            <div class="upload-line">
+              <label class="gold-btn file-btn" for="interpretTender"><span>⇧</span> 上传文件</label>
+              <input id="interpretTender" name="tender" type="file" accept=".doc,.docx,.pdf,.txt,.md" hidden />
+              <span id="interpretFileName" class="muted">或拖拽文件到此处</span>
             </div>
           </form>
 
-          <div class="workflow">
-            <div><strong>1</strong><span>招标文件解读</span></div>
-            <div><strong>2</strong><span>生成投标目录</span></div>
-            <div><strong>3</strong><span>生成正文初稿</span></div>
-            <div><strong>4</strong><span>合规检查</span></div>
-            <div><strong>5</strong><span>导出 Word</span></div>
+          <div class="stat-row stat-three">
+            <div class="stat-card"><span>未解读</span><strong id="unreadCount">0</strong><small>尚未完成读透</small></div>
+            <div class="stat-card"><span>已解读</span><strong id="readCount">1</strong><small>已完成智能解读</small></div>
+            <div class="stat-card highlighted"><span>总数</span><strong id="totalCount">1</strong><small>全部历史文件</small></div>
           </div>
+
+          <div id="interpretCards" class="file-grid"></div>
+          <footer class="pager"><span id="interpretTotal">共 1 份</span><span>第 1/1 页</span><button>10/页⌄</button></footer>
         </section>
 
-        <section id="library" class="panel">
-          <div class="section-header">
-            <h2>本地资料库</h2>
-            <p>资料会保存到项目目录，后续生成时自动检索复用。</p>
+        <section id="read-detail" class="view detail-view">
+          <div class="notice-line">
+            <span>招标文件已解读，可进入标书制作生成目录并撰写投标内容。</span>
+            <button class="gold-btn" data-action="go-make">前往标书制作</button>
           </div>
-          <div class="library-grid">
-            <div class="library-item"><strong>企业资料</strong><span>公司、法人、经营范围、投标常用表述</span></div>
-            <div class="library-item"><strong>资质证书</strong><span>营业执照、许可证、资质证明</span></div>
-            <div class="library-item"><strong>企业业绩</strong><span>合同摘要、案例、项目经验</span></div>
-            <div class="library-item"><strong>历史标书</strong><span>可复用的服务方案、质量控制、应急预案</span></div>
-            <div class="library-item"><strong>模板</strong><span>可放包含 ZL_INSERT_FULL_BID_BODY 的 .docx</span></div>
-          </div>
-        </section>
-
-        <section id="results" class="panel">
-          <div class="results-layout">
-            <div>
-              <div class="section-header">
-                <h2>项目列表</h2>
-                <p>选择一个项目查看解读、初稿和合规报告。</p>
+          <div class="reader-shell">
+            <div class="reader-left">
+              <div class="reader-toolbar">
+                <button class="icon-btn">☰</button>
+                <button id="hideAnalysisBtn">隐藏解读结果</button>
+                <div class="zoom"><span>⌕</span><input type="range" min="70" max="130" value="100" /><span>⌕</span><b>100%</b></div>
+                <button>‹ 上一页</button>
+                <button>第 1 / 5 页</button>
+                <button>下一页 ›</button>
               </div>
-              <div id="projectList" class="project-list"></div>
+              <article class="doc-page" id="sourcePreview"></article>
             </div>
-            <div class="preview">
-              <div class="preview-toolbar">
-                <div id="previewTitle">未选择项目</div>
-                <div id="downloadLinks" class="download-links"></div>
-              </div>
-              <div class="tabs">
-                <button class="tab active" data-doc="report">合规报告</button>
-                <button class="tab" data-doc="outline">投标目录</button>
-                <button class="tab" data-doc="draft">标书初稿</button>
-                <button class="tab" data-doc="analysis">结构化解读</button>
-              </div>
-              <pre id="previewText">生成后可在这里预览结果。</pre>
+            <aside class="analysis-pane">
+              <div class="pane-title"><h2>读透招标文件</h2><button class="icon-btn">⛶</button></div>
+              <div class="analysis-tabs" id="analysisTabs"></div>
+              <div id="analysisContent" class="analysis-content"></div>
+            </aside>
+          </div>
+        </section>
+
+        <section id="make" class="view">
+          <div class="crumbs"><span>工作台</span><span>›</span><span class="crumb-pill">标书制作</span></div>
+          <form id="makeForm" class="upload-band compact" enctype="multipart/form-data">
+            <h2>上传招标文件</h2>
+            <p>支持的格式： .DOC、.DOCX、.PDF、.ZIP、.RAR； 单文件不超过 50MB</p>
+            <p>推荐使用 Word（.doc / .docx）：章节与排版识别更稳定，生成标书效果更好。</p>
+            <div class="upload-line">
+              <label class="gold-btn file-btn" for="makeTender"><span>⇧</span> 上传文件</label>
+              <input id="makeTender" name="tender" type="file" accept=".doc,.docx,.pdf,.txt,.md" hidden />
+              <span id="makeFileName" class="muted">或拖拽文件到此处</span>
+            </div>
+          </form>
+          <div class="stat-row stat-six">
+            <div class="stat-card"><span>未解读</span><strong>0</strong><small>尚未完成读透</small></div>
+            <div class="stat-card"><span>已解读</span><strong id="makeReadCount">1</strong><small>已完成智能解读</small></div>
+            <div class="stat-card"><span>待制作标书数</span><strong id="todoBidCount">1</strong><small>已解读，待生成目录</small></div>
+            <div class="stat-card"><span>制作中标书数</span><strong>0</strong><small>目录已生成，正文未完成</small></div>
+            <div class="stat-card"><span>已完成标书数</span><strong id="doneBidCount">0</strong><small>正文已生成，可导出</small></div>
+            <div class="stat-card highlighted"><span>总数</span><strong id="makeTotalCount">1</strong><small>全部招标文件</small></div>
+          </div>
+          <div id="makeCards" class="file-grid"></div>
+          <footer class="pager"><span>共 <b id="makeTotalText">1</b> 份</span><span>第 1/1 页</span><button>10/页⌄</button><button disabled>上一页</button><button disabled>下一页</button></footer>
+        </section>
+
+        <section id="outline" class="view outline-view">
+          <div class="stepper">
+            <div class="step done"><i>✓</i><span>上传招标文件</span></div>
+            <div class="step done"><i>✓</i><span>解读招标文件</span></div>
+            <div class="step active"><i>3</i><span>制作标书</span></div>
+            <div class="step"><i></i><span>产出可投标书</span></div>
+          </div>
+          <div class="outline-toolbar">
+            <h2>标书目录</h2>
+            <label class="switch-label"><input type="checkbox" /> <span></span>只看技术标</label>
+            <button id="openLengthModal" class="tool-btn">🔧 立即生成标书正文</button>
+            <button id="regenOutlineBtn" class="tool-btn">↻ 重新生成目录</button>
+            <button id="downloadBidBtn" class="tool-btn disabled">⬇ 立即下载完整标书</button>
+          </div>
+          <div class="outline-split">
+            <aside id="outlineList" class="outline-list"></aside>
+            <section class="body-preview">
+              <header><strong>正文内容预览</strong><div class="zoom"><span>⌕</span><input type="range" min="70" max="130" value="100" /><span>⌕</span><b>100%</b></div></header>
+              <div id="bodyPreviewText" class="empty-body"><button id="centerGenerateBtn" class="tool-btn">🔧 立即生成标书正文</button></div>
+            </section>
+          </div>
+        </section>
+
+        <section id="check" class="view check-view">
+          <div class="crumbs"><span>工作台</span><span>›</span><span class="strong">标书合规检查</span></div>
+          <div class="check-form">
+            <h2>招标文件（DOC / DOCX）</h2>
+            <div class="selected-doc"><span>▤</span><strong id="checkTenderName">（定稿）昆明市中医医院2026年门诊导医服务、消毒供应...</strong><em>未解读</em><button>重新上传</button></div>
+            <p>当前为未解读或摘要暂不可用，开始检查时将先进行智能解读。</p>
+            <hr />
+            <h2>标书（可多选，DOC / DOCX） <button class="white-btn">选择标书文件</button></h2>
+            <p>可多次选择追加；同名同大小会自动去重。</p>
+            <div class="selected-doc removable"><span>▤</span><strong id="checkBidName">（定稿）昆明市中医医院2026年门诊导医服务、消毒供应...</strong><small>487.0 KB</small><button>×</button></div>
+            <hr />
+            <h2>敏感单位名称（可选）</h2>
+            <input class="wide-input" placeholder="逗号分隔，例如：甲公司、乙设计院" />
+            <p>可选。填写希望在标书中留意的单位名称，系统会在正文检索并在结果页「封标前总览」中标出出现位置。</p>
+            <hr />
+            <h2>检查选项</h2>
+            <div class="switch-row">
+              <label class="switch-label"><input type="checkbox" /> <span></span>是否暗标</label>
+              <label class="switch-label"><input type="checkbox" /> <span></span>是否电子投标</label>
+            </div>
+            <label class="switch-label block"><input type="checkbox" checked /> <span></span>对照招标文件表述</label>
+            <p class="indent-note">关闭时仅做格式与规则检查；开启时额外对照招标文件，检查响应是否到位、表述是否一致（AI 辅助，结论需人工确认）。</p>
+            <button id="startCheckBtn" class="wide-gold">开始合规检查</button>
+          </div>
+        </section>
+
+        <section id="library" class="view library-view">
+          <div class="library-tabs">
+            <button class="active">企业信息</button>
+            <button>法人信息</button>
+            <button>企业资质 <em>0</em></button>
+            <button>企业业绩 <em>0</em></button>
+            <button>历史标书库 <em class="tag">核心素材</em></button>
+            <button>标书模版</button>
+          </div>
+          <div class="library-actions"><button class="white-btn">⬇ 下载模板</button><button class="white-btn">⇧ 导入 Excel</button><span>请填写企业信息</span></div>
+          <div class="library-form">
+            <div class="form-left">
+              <h2>企业信息</h2>
+              <input placeholder="公司名称 *" />
+              <div class="two-col"><input placeholder="企业类型" /><input placeholder="营业期限" /></div>
+              <div class="two-col"><input placeholder="统一社会信用代码" /><input placeholder="成立时间" type="text" onfocus="this.type='date'" /></div>
+              <button class="accordion">更多信息 <span>⌄</span></button>
+              <section class="subform">
+                <h3>保险行业专属信息 <span>⌃</span></h3>
+                <input placeholder="保险许可证号" />
+                <textarea placeholder="保险许可证业务范围"></textarea>
+                <div class="two-col"><input placeholder="监管评级" /><input placeholder="偿付能力充足率（%）" /></div>
+                <div class="two-col"><input placeholder="分支机构数量" /><input placeholder="保费收入（亿元）" /></div>
+                <input placeholder="理赔结案率（%）" />
+              </section>
+              <div class="bottom-actions"><button class="gold-btn">保存</button><button class="white-btn">取消</button></div>
+            </div>
+            <div class="form-right">
+              <h3>营业执照</h3>
+              <div class="dropbox"><span>▧</span><strong>将文件拖拽到此处，或<br />点击上传</strong><small>必须为清晰、完整的彩色原件扫描件、数码照，或者电子营业执照<br />仅支持 PNG、JPG、BMP、PDF，最大 10MB</small></div>
+              <h3>开户许可证</h3>
+              <div class="dropbox"><span>▧</span><strong>附：开户许可证（基本户等）<br />点击上传</strong><small>仅支持 PNG、JPG、BMP、PDF，最大 10MB</small></div>
             </div>
           </div>
         </section>
 
-        <section id="settings" class="panel">
-          <div class="section-header">
-            <h2>部署说明</h2>
-            <p>当前是本地可运行版本，后续可推送到 GitHub 后部署到服务器或容器平台。</p>
-          </div>
-          <div class="deploy-box">
-            <code>python3 web_app.py --host 0.0.0.0 --port 8787</code>
-            <p>生产部署建议加反向代理、HTTPS、访问密码，并把资料目录挂载为持久化磁盘。</p>
-          </div>
+        <section id="history" class="view simple-view">
+          <h2>历史标书库</h2>
+          <p>这里用于沉淀可复用的服务方案、质量控制、人员配置、应急预案等核心素材。</p>
+          <div id="historyList" class="simple-list"></div>
+        </section>
+
+        <section id="templates" class="view simple-view">
+          <h2>标书模版</h2>
+          <p>自用版可先把 Word 模板放到本地“模板”目录，生成完整标书时自动套用。</p>
+          <div class="simple-card">默认模板：完整标书.docx 输出格式</div>
+        </section>
+
+        <section id="outputs" class="view simple-view">
+          <h2>输出下载</h2>
+          <p>所有生成结果都保存在本地“输出标书”目录。</p>
+          <div id="outputList" class="simple-list"></div>
         </section>
       </main>
+
+      <div id="lengthModal" class="modal hidden" role="dialog" aria-modal="true">
+        <div class="modal-card">
+          <h2>选择标书篇幅</h2>
+          <p>请选择标书的篇幅大小，系统将根据您的选择生成相应页数的目录结构。</p>
+          <div class="length-grid">
+            <button data-pages="50"><strong>精简版</strong><span>50页</span><small>约 3.5 万字</small></button>
+            <button data-pages="80"><strong>标准版</strong><span>80页</span><small>约 5.6 万字</small></button>
+            <button class="selected" data-pages="120"><strong>详细版</strong><span>120页</span><small>约 8.4 万字</small></button>
+            <button data-pages="150"><strong>完整版</strong><span>150页</span><small>约 10.5 万字</small></button>
+            <button data-pages="200"><strong>全面版</strong><span>200页</span><small>约 14 万字</small></button>
+            <button data-pages="250"><strong>超详细版</strong><span>250页</span><small>约 17.5 万字</small></button>
+          </div>
+          <div class="divider"><span>或自定义页数</span></div>
+          <h3>目录编号方式</h3>
+          <p>系统将按您选择的方式为目录各级标题编号；重新生成目录时可再次修改。</p>
+          <div class="numbering">
+            <button class="selected"><strong>1、 1.1、 1.1.1、 1.1.1.1、 1.1.1.1.1.</strong><small>例：1. 投标函 → 1.1. 实施方案 → 1.1.1. 项目概况</small></button>
+            <button><strong>第一章、一、（一）、1.、（1）</strong><small>例：第一章 投标函 → 一、报价说明 → （一）明细</small></button>
+          </div>
+          <label class="page-input">自定义总页数<input id="customPages" type="number" min="1" max="300" value="120" /><small>请输入1-300之间的整数</small></label>
+          <p class="estimate">按当前页数，正文体量约 <strong id="wordEstimate">84,000字</strong>（约 8.4 万） ⓘ</p>
+          <footer><button id="cancelLength" class="white-btn">取消</button><button id="confirmLength" class="gold-btn">确认并生成</button></footer>
+        </div>
+      </div>
     </div>
     <script src="/web/app.js"></script>
   </body>

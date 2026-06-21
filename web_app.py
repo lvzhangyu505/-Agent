@@ -125,6 +125,7 @@ class Handler(BaseHTTPRequestHandler):
                         "outline": read_project_text(project, "02_投标目录.md"),
                         "draft": read_project_text(project, "03_标书初稿.md"),
                         "report": read_project_text(project, "04_合规检查报告.md"),
+                        "source": read_project_text(project, "招标文件全文.txt"),
                     }
                 )
                 return
