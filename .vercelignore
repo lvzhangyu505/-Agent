@@ -1,0 +1,15 @@
+.git
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+node_modules/
+
+# Local private working data. Keep these off Vercel.
+招标文件/
+企业资料/
+资质证书/
+企业业绩/
+历史标书/
+模板/
+输出标书/
