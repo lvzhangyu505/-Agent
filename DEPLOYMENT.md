@@ -41,3 +41,13 @@ python3 web_app.py --host 0.0.0.0 --port 8787
 - 定期备份资料目录。
 
 当前版本是自用工具，不包含账号体系。不要直接公开暴露到公网。
+
+## Vercel 部署
+
+当前项目已包含 Vercel 预览部署配置：
+
+- `vercel.json`：把首页指向 `web/index.html`，把 `/api/*` 指向 Python Function。
+- `api/index.py`：Vercel Python Function 入口，复用本地 `web_app.py` 的请求处理器。
+- `.vercelignore`：避免把本地招标文件、企业资料、历史标书、输出标书上传到 Vercel。
+
+注意：Vercel 适合预览网页和轻量接口，不适合作为当前版本的长期文件存储。正式处理大文件上传和长期保存资料时，建议接入 Vercel Blob/Supabase，或把后端部署到云服务器。
