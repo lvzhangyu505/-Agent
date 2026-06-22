@@ -175,31 +175,33 @@
             <button>历史标书库 <em class="tag">核心素材</em></button>
             <button>标书模版</button>
           </div>
-          <div class="library-actions"><button class="white-btn">⬇ 下载模板</button><button class="white-btn">⇧ 导入 Excel</button><span>请填写企业信息</span></div>
-          <div class="library-form">
+          <div class="library-actions"><button class="white-btn" type="button">⬇ 下载模板</button><button class="white-btn" type="button">⇧ 导入 Excel</button><span id="libraryStatus">请填写企业信息</span></div>
+          <form id="libraryForm" class="library-form">
             <div class="form-left">
               <h2>企业信息</h2>
-              <input placeholder="公司名称 *" />
-              <div class="two-col"><input placeholder="企业类型" /><input placeholder="营业期限" /></div>
-              <div class="two-col"><input placeholder="统一社会信用代码" /><input placeholder="成立时间" type="text" onfocus="this.type='date'" /></div>
-              <button class="accordion">更多信息 <span>⌄</span></button>
+              <input name="company_name" placeholder="公司名称 *" />
+              <div class="two-col"><input name="company_type" placeholder="企业类型" /><input name="business_period" placeholder="营业期限" /></div>
+              <div class="two-col"><input name="credit_code" placeholder="统一社会信用代码" /><input name="established_at" placeholder="成立时间" type="text" onfocus="this.type='date'" /></div>
+              <button class="accordion" type="button">更多信息 <span>⌄</span></button>
               <section class="subform">
                 <h3>保险行业专属信息 <span>⌃</span></h3>
-                <input placeholder="保险许可证号" />
-                <textarea placeholder="保险许可证业务范围"></textarea>
-                <div class="two-col"><input placeholder="监管评级" /><input placeholder="偿付能力充足率（%）" /></div>
-                <div class="two-col"><input placeholder="分支机构数量" /><input placeholder="保费收入（亿元）" /></div>
-                <input placeholder="理赔结案率（%）" />
+                <input name="insurance_license" placeholder="保险许可证号" />
+                <textarea name="insurance_scope" placeholder="保险许可证业务范围"></textarea>
+                <div class="two-col"><input name="regulatory_rating" placeholder="监管评级" /><input name="solvency_rate" placeholder="偿付能力充足率（%）" /></div>
+                <div class="two-col"><input name="branch_count" placeholder="分支机构数量" /><input name="premium_income" placeholder="保费收入（亿元）" /></div>
+                <input name="claim_close_rate" placeholder="理赔结案率（%）" />
               </section>
-              <div class="bottom-actions"><button class="gold-btn">保存</button><button class="white-btn">取消</button></div>
+              <div class="bottom-actions"><button class="gold-btn" type="submit">保存</button><button class="white-btn" type="button" id="resetLibraryBtn">取消</button></div>
             </div>
             <div class="form-right">
               <h3>营业执照</h3>
-              <div class="dropbox"><span>▧</span><strong>将文件拖拽到此处，或<br />点击上传</strong><small>必须为清晰、完整的彩色原件扫描件、数码照，或者电子营业执照<br />仅支持 PNG、JPG、BMP、PDF，最大 10MB</small></div>
+              <label class="dropbox" for="businessLicenseUpload"><span>▧</span><strong>将文件拖拽到此处，或<br />点击上传</strong><small id="businessLicenseName">必须为清晰、完整的彩色原件扫描件、数码照，或者电子营业执照<br />仅支持 PNG、JPG、BMP、PDF，最大 10MB</small></label>
+              <input id="businessLicenseUpload" type="file" hidden accept=".png,.jpg,.jpeg,.bmp,.pdf" data-upload-category="licenses" multiple />
               <h3>开户许可证</h3>
-              <div class="dropbox"><span>▧</span><strong>附：开户许可证（基本户等）<br />点击上传</strong><small>仅支持 PNG、JPG、BMP、PDF，最大 10MB</small></div>
+              <label class="dropbox" for="accountLicenseUpload"><span>▧</span><strong>附：开户许可证（基本户等）<br />点击上传</strong><small id="accountLicenseName">仅支持 PNG、JPG、BMP、PDF，最大 10MB</small></label>
+              <input id="accountLicenseUpload" type="file" hidden accept=".png,.jpg,.jpeg,.bmp,.pdf" data-upload-category="licenses" multiple />
             </div>
-          </div>
+          </form>
         </section>
 
         <section id="history" class="view simple-view">

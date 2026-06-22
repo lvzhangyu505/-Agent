@@ -94,6 +94,63 @@ def read_project_text(project: str, filename: str) -> str:
     return path.read_text(encoding="utf-8", errors="ignore")
 
 
+def read_project_json(project: str, filename: str, default: Any) -> Any:
+    path = safe_inside(agent.DIRS["outputs"] / project / filename)
+    return read_json_file(path, default)
+
+
+def read_json_file(path: Path, default: Any) -> Any:
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return default
+
+
+def write_json_file(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def library_store_path() -> Path:
+    return agent.DIRS["company"] / "资料库.json"
+
+
+def library_assets() -> Dict[str, List[Dict[str, Any]]]:
+    groups = {
+        "licenses": agent.DIRS["company"] / "证照附件",
+        "certs": agent.DIRS["certs"],
+        "cases": agent.DIRS["cases"],
+        "history": agent.DIRS["history"],
+        "templates": agent.DIRS["templates"],
+    }
+    result: Dict[str, List[Dict[str, Any]]] = {}
+    for key, directory in groups.items():
+        files: List[Dict[str, Any]] = []
+        if directory.exists():
+            for path in sorted(directory.rglob("*"), key=lambda p: p.stat().st_mtime if p.is_file() else 0, reverse=True):
+                if path.is_file():
+                    files.append({
+                        "name": path.name,
+                        "path": str(path.relative_to(ROOT)),
+                        "size": path.stat().st_size,
+                        "updated_at": path.stat().st_mtime,
+                    })
+        result[key] = files
+    return result
+
+
+def library_payload() -> Dict[str, Any]:
+    data = read_json_file(library_store_path(), {})
+    data.setdefault("company", {})
+    data.setdefault("legal", {})
+    data.setdefault("cases", [])
+    data.setdefault("certs", [])
+    data["assets"] = library_assets()
+    return data
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "BiaoshuAgent/1.0"
 
@@ -118,6 +175,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/project":
                 query = urllib.parse.parse_qs(parsed.query)
                 project = query.get("name", [""])[0]
+                self.ensure_project_chapters(project)
                 self.send_json(
                     {
                         "project": project,
@@ -126,8 +184,12 @@ class Handler(BaseHTTPRequestHandler):
                         "draft": read_project_text(project, "03_标书初稿.md"),
                         "report": read_project_text(project, "04_合规检查报告.md"),
                         "source": read_project_text(project, "招标文件全文.txt"),
+                        "chapters": read_project_json(project, "05_章节正文.json", []),
                     }
                 )
+                return
+            if path == "/api/library":
+                self.send_json({"library": library_payload()})
                 return
             if path == "/download":
                 query = urllib.parse.parse_qs(parsed.query)
@@ -141,7 +203,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         try:
-            if self.path != "/api/run":
+            parsed = urllib.parse.urlparse(self.path)
+            path = parsed.path
+            if path == "/api/library":
+                self.handle_library_save()
+                return
+            if path == "/api/library/upload":
+                self.handle_library_upload()
+                return
+            if path == "/api/generate-chapter":
+                self.handle_generate_chapter()
+                return
+            if path != "/api/run":
                 self.send_error(404, "Not found")
                 return
             length = int(self.headers.get("Content-Length", "0") or 0)
@@ -162,6 +235,7 @@ class Handler(BaseHTTPRequestHandler):
             analysis, out_dir = agent.analyze_tender(tender)
             agent.make_outline(analysis, out_dir)
             agent.draft_bid(analysis, out_dir)
+            agent.generate_chapters(analysis, out_dir)
             agent.compliance_check(analysis, out_dir / "03_标书初稿.md", out_dir)
             docx = agent.export_docx(out_dir / "03_标书初稿.md", out_dir / "完整标书.docx", agent.find_template())
             self.send_json(
@@ -176,7 +250,65 @@ class Handler(BaseHTTPRequestHandler):
             traceback.print_exc()
             self.send_error_json(500, str(exc))
 
-    def parse_multipart(self, length: int) -> Dict[str, List[UploadedFile]]:
+    def ensure_project_chapters(self, project: str) -> None:
+        out_dir = safe_inside(agent.DIRS["outputs"] / project)
+        analysis_path = out_dir / "01_招标文件解读.json"
+        chapters_path = out_dir / "05_章节正文.json"
+        if analysis_path.exists() and not chapters_path.exists():
+            analysis = read_json_file(analysis_path, {})
+            if analysis:
+                agent.generate_chapters(analysis, out_dir)
+
+    def handle_library_save(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        current = read_json_file(library_store_path(), {})
+        section = data.get("section") or "company"
+        payload = data.get("data") or {}
+        if section not in {"company", "legal", "cases", "certs"}:
+            self.send_error_json(400, "不支持的资料库分区")
+            return
+        current[section] = payload
+        write_json_file(library_store_path(), current)
+        agent.write_library_markdown(current)
+        self.send_json({"library": library_payload()})
+
+    def handle_library_upload(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length > MAX_UPLOAD_MB * 1024 * 1024:
+            self.send_error_json(413, f"上传文件总大小超过 {MAX_UPLOAD_MB}MB")
+            return
+        form = self.parse_multipart(length)
+        category = self.first_text(form, "category") or "licenses"
+        destinations = {
+            "licenses": agent.DIRS["company"] / "证照附件",
+            "certs": agent.DIRS["certs"],
+            "cases": agent.DIRS["cases"],
+            "history": agent.DIRS["history"],
+            "templates": agent.DIRS["templates"],
+        }
+        dest = destinations.get(category)
+        if not dest:
+            self.send_error_json(400, "不支持的上传分类")
+            return
+        saved = []
+        for field in form.get("files", []):
+            path = save_upload(field, dest)
+            if path:
+                saved.append(str(path.relative_to(ROOT)))
+        self.send_json({"saved": saved, "library": library_payload()})
+
+    def handle_generate_chapter(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        project = data.get("project") or ""
+        chapter_id = data.get("chapter_id") or ""
+        out_dir = safe_inside(agent.DIRS["outputs"] / project)
+        analysis = read_json_file(out_dir / "01_招标文件解读.json", {})
+        chapters = agent.generate_chapters(analysis, out_dir, only_id=chapter_id or None)
+        self.send_json({"project": project, "chapters": chapters})
+
+    def parse_multipart(self, length: int) -> Dict[str, List[Any]]:
         content_type = self.headers.get("Content-Type", "")
         body = self.rfile.read(length)
         raw = (
@@ -184,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
             "MIME-Version: 1.0\r\n\r\n"
         ).encode("utf-8") + body
         message = BytesParser(policy=default).parsebytes(raw)
-        form: Dict[str, List[UploadedFile]] = {}
+        form: Dict[str, List[Any]] = {}
         if not message.is_multipart():
             return form
         for part in message.iter_parts():
@@ -192,15 +324,23 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             name = part.get_param("name", header="content-disposition")
             filename = part.get_filename()
-            if not name or not filename:
+            if not name:
                 continue
             payload = part.get_payload(decode=True) or b""
-            form.setdefault(name, []).append(UploadedFile(filename=filename, data=payload))
+            if filename:
+                form.setdefault(name, []).append(UploadedFile(filename=filename, data=payload))
+            else:
+                form.setdefault(name, []).append(payload.decode("utf-8", errors="ignore"))
         return form
 
-    def save_optional_uploads(self, form: Dict[str, List[UploadedFile]], key: str, dest: Path) -> None:
+    def first_text(self, form: Dict[str, List[Any]], key: str) -> str:
+        value = form.get(key, [""])[0]
+        return value if isinstance(value, str) else ""
+
+    def save_optional_uploads(self, form: Dict[str, List[Any]], key: str, dest: Path) -> None:
         for field in form.get(key, []):
-            save_upload(field, dest)
+            if isinstance(field, UploadedFile):
+                save_upload(field, dest)
 
     def send_json(self, data: Dict[str, Any], status_code: int = 200) -> None:
         body = json_bytes(data)

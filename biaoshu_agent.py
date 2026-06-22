@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from html import unescape
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parent
 DIRS = {
@@ -152,6 +152,112 @@ def find_keyword_lines(text: str, words: Sequence[str], limit: int = 18) -> List
     return matches
 
 
+def extract_first(patterns: Sequence[str], text: str) -> str:
+    for pattern in patterns:
+        m = re.search(pattern, text, re.I)
+        if m:
+            value = re.sub(r"\s+", " ", m.group(1)).strip(" ：:，,。；;")
+            if value:
+                return value[:120]
+    return ""
+
+
+def extract_project_meta(path: Path, text: str) -> Dict[str, str]:
+    return {
+        "project_name": guess_project_name(path, text),
+        "project_no": extract_first([
+            r"(?:项目编号|采购编号|招标编号)[:：\s]+([A-Za-z0-9\-_/（）()【】\[\]\u4e00-\u9fa5]{3,80})",
+        ], text),
+        "purchaser": extract_first([
+            r"(?:采购人|招标人|发包人)[:：\s]+([^\n，,。；;]{3,80})",
+            r"([\u4e00-\u9fa5A-Za-z0-9（）()]{3,60}(?:医院|公司|单位|中心|学校|局))",
+        ], text),
+        "agency": extract_first([
+            r"(?:采购代理机构|招标代理机构|代理机构)[:：\s]+([^\n，,。；;]{3,80})",
+        ], text),
+        "budget": extract_first([
+            r"(?:预算金额|采购预算|最高限价|控制价)[:：\s]*([0-9,.]+ ?(?:万元|元|人民币)?(?:/[^\n，,。；;]{1,20})?)",
+        ], text),
+        "service_period": extract_first([
+            r"(?:服务期限|合同履行期限|履约期限|工期)[:：\s]+([^\n。；;]{2,80})",
+        ], text),
+        "bid_deadline": extract_first([
+            r"(?:投标截止时间|响应文件提交截止时间|递交截止时间|开标时间)[:：\s]+([0-9年月日:：\-\s]{8,40})",
+        ], text),
+        "bid_location": extract_first([
+            r"(?:开标地点|递交地点|提交地点)[:：\s]+([^\n。；;]{3,100})",
+        ], text),
+    }
+
+
+def classify_priority(line: str, category: str) -> str:
+    if category == "rejection" or any(word in line for word in ["必须", "不得", "无效", "废标", "否决", "不予受理"]):
+        return "高"
+    if category in {"qualification", "scoring", "format"}:
+        return "中"
+    return "低"
+
+
+def build_requirement_items(sections: Dict[str, List[str]]) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    advice_map = {
+        "project": "在投标函、封面、项目理解章节核对并统一项目基本信息。",
+        "qualification": "放入资格证明文件，并在资格响应章节逐条说明。",
+        "rejection": "作为封标前高风险检查项，正文和附件中必须规避。",
+        "scoring": "转化为技术方案或商务证明章节，保证评审点有明确内容。",
+        "business": "在商务响应表和合同条款响应中逐条确认。",
+        "price": "在报价说明和报价表中保持口径、大小写金额、税费一致。",
+        "format": "导出 Word 后检查页眉页脚、目录、页码、签章、暗标要求。",
+    }
+    for category, lines in sections.items():
+        for line in lines:
+            items.append({
+                "category": SECTION_TITLES.get(category, category),
+                "key": category,
+                "priority": classify_priority(line, category),
+                "source_text": line,
+                "response_strategy": advice_map.get(category, "在对应章节补充响应。"),
+            })
+    return items
+
+
+def build_scoring_items(lines: Sequence[str]) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    for line in lines:
+        score = extract_first([r"([0-9]+(?:\.[0-9]+)?\s*分)"], line)
+        items.append({
+            "item": line[:180],
+            "score": score,
+            "response_chapter": guess_response_chapter(line),
+            "evidence": guess_evidence(line),
+        })
+    return items
+
+
+def guess_response_chapter(line: str) -> str:
+    if any(w in line for w in ["业绩", "案例", "合同"]):
+        return "企业业绩"
+    if any(w in line for w in ["人员", "团队", "项目负责人"]):
+        return "组织架构与人员配置"
+    if any(w in line for w in ["质量", "管理", "制度"]):
+        return "质量控制措施"
+    if any(w in line for w in ["应急", "风险"]):
+        return "风险控制与应急预案"
+    if any(w in line for w in ["报价", "价格"]):
+        return "报价文件"
+    return "技术服务方案"
+
+
+def guess_evidence(line: str) -> str:
+    if any(w in line for w in ["证书", "资质", "许可证"]):
+        return "资质证书扫描件或证明材料"
+    if any(w in line for w in ["业绩", "合同"]):
+        return "类似项目合同、验收证明或中标通知书"
+    if any(w in line for w in ["人员", "负责人"]):
+        return "人员简历、证书、社保证明或任命文件"
+    return "正文方案、承诺函或附件证明"
+
+
 def guess_project_name(path: Path, text: str) -> str:
     patterns = [
         r"项目名称[:：\s]+([^\n，,。；;]{4,80})",
@@ -176,13 +282,16 @@ def analyze_tender(path: Path) -> Tuple[Dict, Path]:
     text = normalize_text(read_text(path))
     if not text:
         raise RuntimeError(f"未能从文件中提取文本：{path}")
-    project_name = guess_project_name(path, text)
+    structured = extract_project_meta(path, text)
+    project_name = structured["project_name"]
     out_dir = DIRS["outputs"] / project_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     sections = {key: find_keyword_lines(text, words) for key, words in KEYWORDS.items()}
     risks = build_risks(sections)
     checklist = build_checklist(sections)
+    requirement_items = build_requirement_items(sections)
+    scoring_items = build_scoring_items(sections.get("scoring", []))
 
     result = {
         "meta": {
@@ -191,7 +300,10 @@ def analyze_tender(path: Path) -> Tuple[Dict, Path]:
             "generated_at": datetime.now().isoformat(timespec="seconds"),
             "text_chars": len(text),
         },
+        "structured": structured,
         "sections": sections,
+        "requirements": requirement_items,
+        "scoring_items": scoring_items,
         "risks": risks,
         "checklist": checklist,
         "raw_text_sample": text[:3000],
@@ -377,6 +489,121 @@ def draft_bid(analysis: Dict, out_dir: Path) -> str:
     return content
 
 
+def chapter_blueprint(analysis: Dict) -> List[Dict[str, Any]]:
+    sections = analysis.get("sections", {})
+    structured = analysis.get("structured", {})
+    project = analysis.get("meta", {}).get("project_name", structured.get("project_name", "投标文件"))
+    return [
+        {"id": "letter", "title": "一、投标函及资格响应", "kind": "商务标", "keywords": ["公司", "企业", "资格"], "requirements": sections.get("qualification", [])},
+        {"id": "business", "title": "二、商务响应文件", "kind": "商务标", "keywords": ["合同", "付款", "服务期限"], "requirements": sections.get("business", []) + sections.get("price", [])},
+        {"id": "understanding", "title": "三、项目理解与需求分析", "kind": "技术标", "keywords": [project, structured.get("purchaser", ""), "服务"], "requirements": sections.get("project", [])},
+        {"id": "plan", "title": "四、服务总体方案", "kind": "技术标", "keywords": ["方案", "服务", "管理"], "requirements": sections.get("scoring", [])},
+        {"id": "team", "title": "五、组织架构与人员配置", "kind": "技术标", "keywords": ["人员", "团队", "项目负责人"], "requirements": find_keyword_lines("\n".join(sections.get("qualification", []) + sections.get("scoring", [])), ["人员", "团队", "负责人"], 8)},
+        {"id": "quality", "title": "六、质量控制措施", "kind": "技术标", "keywords": ["质量", "检查", "考核"], "requirements": find_keyword_lines("\n".join(sections.get("scoring", []) + sections.get("business", [])), ["质量", "考核", "检查"], 8)},
+        {"id": "risk", "title": "七、风险控制与应急预案", "kind": "技术标", "keywords": ["风险", "应急", "保障"], "requirements": find_keyword_lines("\n".join(sections.get("format", []) + sections.get("business", [])), ["风险", "应急", "保障"], 8)},
+        {"id": "score", "title": "八、评分点专项响应", "kind": "技术标", "keywords": ["评分", "分值", "评审"], "requirements": sections.get("scoring", [])},
+        {"id": "check", "title": "九、封标前检查清单", "kind": "检查", "keywords": ["检查", "暗标", "签章"], "requirements": analysis.get("checklist", [])},
+    ]
+
+
+def generate_chapter_content(chapter: Dict[str, Any], analysis: Dict, docs: Sequence[SourceDoc]) -> str:
+    project = analysis.get("meta", {}).get("project_name", "本项目")
+    structured = analysis.get("structured", {})
+    refs = search_knowledge(chapter.get("keywords", []), docs, limit=3)
+    lines = [
+        f"## {chapter['title']}",
+        "",
+        f"本章节围绕“{chapter['title']}”进行响应，适用于{chapter.get('kind', '投标文件')}部分。投标人将结合{project}的招标要求、项目特点和履约目标，形成可执行、可检查、可追溯的响应内容。",
+        "",
+    ]
+    if structured:
+        labels = {
+            "project_no": "项目编号",
+            "purchaser": "采购人",
+            "budget": "预算/最高限价",
+            "service_period": "服务期限",
+            "bid_deadline": "投标截止时间",
+        }
+        meta_bits = [f"{labels[k]}：{structured[k]}" for k in labels if structured.get(k)]
+        if meta_bits:
+            lines.extend(["### 关键信息引用", *[f"- {item}" for item in meta_bits], ""])
+    requirements = chapter.get("requirements") or []
+    if requirements:
+        lines.append("### 招标要求逐条响应")
+        for i, item in enumerate(requirements[:10], 1):
+            lines.append(f"{i}. 招标要求：{item}")
+            lines.append("   响应安排：我方将在本章节及相关附件中提供明确响应，确保内容、证明材料和承诺事项相互一致。")
+        lines.append("")
+    lines.extend([
+        "### 实施与管理措施",
+        "我方将建立项目负责人牵头、专业人员执行、质量复核人员检查的工作机制。对涉及进度、质量、人员、资料、沟通和验收的事项建立台账，做到任务有分工、过程有记录、问题有整改、结果可复核。",
+        "",
+        "### 保障与承诺",
+        "我方承诺严格按照招标文件及采购人管理要求组织实施，所有响应内容均以真实资料和可执行措施为基础。若中标，将在合同签订、进场准备、服务实施、验收交付等阶段持续接受采购人监督。",
+        "",
+    ])
+    if refs:
+        lines.append("### 可引用资料")
+        for path, excerpt in refs:
+            lines.append(f"- 来源：`{path.relative_to(ROOT)}`")
+            lines.append(f"  摘要：{excerpt}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def generate_chapters(analysis: Dict, out_dir: Path, only_id: str | None = None) -> List[Dict[str, Any]]:
+    docs = load_knowledge()
+    path = out_dir / "05_章节正文.json"
+    existing = []
+    if path.exists():
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing = []
+    existing_map = {item.get("id"): item for item in existing}
+    chapters: List[Dict[str, Any]] = []
+    for item in chapter_blueprint(analysis):
+        if only_id and item["id"] != only_id:
+            chapters.append(existing_map.get(item["id"], item))
+            continue
+        content = generate_chapter_content(item, analysis, docs)
+        chapters.append({**item, "content": content, "updated_at": datetime.now().isoformat(timespec="seconds")})
+    write_json(path, chapters)
+    return chapters
+
+
+def write_library_markdown(data: Dict[str, Any]) -> None:
+    company = data.get("company", {})
+    legal = data.get("legal", {})
+    lines = ["# 企业基础信息", ""]
+    labels = {
+        "company_name": "公司名称",
+        "company_type": "企业类型",
+        "business_period": "营业期限",
+        "credit_code": "统一社会信用代码",
+        "established_at": "成立时间",
+        "insurance_license": "保险许可证号",
+        "insurance_scope": "保险许可证业务范围",
+        "regulatory_rating": "监管评级",
+        "solvency_rate": "偿付能力充足率",
+        "branch_count": "分支机构数量",
+        "premium_income": "保费收入",
+        "claim_close_rate": "理赔结案率",
+    }
+    for key, label in labels.items():
+        value = company.get(key)
+        if value:
+            lines.append(f"- {label}：{value}")
+    if legal:
+        lines.extend(["", "## 法人信息"])
+        for key, value in legal.items():
+            if value:
+                lines.append(f"- {key}：{value}")
+    target = DIRS["company"] / "企业基础信息.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def render_refs(title: str, refs: Sequence[Tuple[Path, str]]) -> str:
     if not refs:
         return f"### {title}\n\n- 暂未在本地资料库中检索到可直接引用的材料，请补充资料后重新生成。\n"
@@ -506,7 +733,7 @@ def export_docx(md_path: Path, output: Path | None = None, template: Path | None
     return output
 
 
-def write_json(path: Path, data: Dict) -> None:
+def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -555,6 +782,7 @@ def run_all(tender_path: Path) -> None:
     analysis, out_dir = analyze_tender(tender_path)
     make_outline(analysis, out_dir)
     draft_bid(analysis, out_dir)
+    generate_chapters(analysis, out_dir)
     compliance_check(analysis, out_dir / "03_标书初稿.md", out_dir)
     export_docx(out_dir / "03_标书初稿.md", out_dir / "完整标书.docx", find_template())
     print(f"已完成：{out_dir}")

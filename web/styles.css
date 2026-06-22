@@ -535,6 +535,30 @@ button:disabled {
 
 .outline-list ol { margin: 0; padding-left: 18px; line-height: 2; }
 .outline-list li { margin: 2px 0; color: var(--text); }
+.chapter-list {
+  list-style: none;
+  padding-left: 0 !important;
+  display: grid;
+  gap: 8px;
+}
+.chapter-list li { margin: 0; }
+.chapter-list button {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  display: grid;
+  gap: 3px;
+  color: var(--text);
+}
+.chapter-list button.active {
+  border-color: rgba(17, 119, 215, 0.5);
+  background: linear-gradient(180deg, #fff, #eef8ff);
+  box-shadow: 0 8px 20px rgba(31, 91, 142, 0.08);
+}
+.chapter-list small { color: var(--muted); }
 .body-preview { background: var(--bg); }
 .body-preview header {
   height: 48px;
@@ -553,6 +577,23 @@ button:disabled {
   white-space: pre-wrap;
   line-height: 1.8;
 }
+.chapter-preview {
+  width: min(820px, calc(100% - 32px));
+  margin: 24px auto;
+}
+.chapter-preview pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  line-height: 1.9;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+.chapter-preview .tool-btn { margin-bottom: 12px; }
 
 .modal {
   position: fixed;
@@ -724,14 +765,16 @@ button:disabled {
 .dropbox strong { font-weight: 500; line-height: 1.9; }
 .dropbox small { line-height: 2; }
 .bottom-actions {
-  position: fixed;
-  left: 120px;
+  position: sticky;
+  left: auto;
   bottom: 0;
   height: 58px;
   display: flex;
   align-items: center;
   gap: 16px;
   z-index: 10;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(8px);
 }
 
 .simple-view { padding: 32px 42px; }

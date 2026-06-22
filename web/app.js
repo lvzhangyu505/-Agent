@@ -16,11 +16,15 @@ const bodyPreviewText = document.getElementById("bodyPreviewText");
 const lengthModal = document.getElementById("lengthModal");
 const customPages = document.getElementById("customPages");
 const wordEstimate = document.getElementById("wordEstimate");
+const libraryForm = document.getElementById("libraryForm");
+const libraryStatus = document.getElementById("libraryStatus");
 
 let projects = [];
 let currentProject = null;
 let currentProjectData = null;
 let currentAnalysisTab = "insight";
+let libraryData = {};
+let selectedChapterId = "";
 
 const demoProject = {
   name: "云南省第一人民医院辅助类服务项目咨询公告 - 云南省第一人民医院.pdf",
@@ -76,6 +80,12 @@ document.querySelectorAll(".length-grid button").forEach((button) => {
 
 customPages.addEventListener("input", updateEstimate);
 
+libraryForm.addEventListener("submit", saveLibraryCompany);
+document.getElementById("resetLibraryBtn").addEventListener("click", () => fillLibraryForm(libraryData.company || {}));
+document.querySelectorAll("[data-upload-category]").forEach((input) => {
+  input.addEventListener("change", () => uploadLibraryFiles(input));
+});
+
 interpretTender.addEventListener("change", () => {
   document.getElementById("interpretFileName").textContent = interpretTender.files[0]?.name || "或拖拽文件到此处";
   if (interpretTender.files[0]) runUpload(interpretForm, "interpret");
@@ -123,6 +133,18 @@ async function loadProjects(preselect) {
   currentProject = projects.find((project) => project.name === preselect) || projects[0];
   await loadProjectData(currentProject);
   renderAll();
+}
+
+async function loadLibrary() {
+  try {
+    const response = await fetch("/api/library");
+    const data = await response.json();
+    libraryData = data.library || {};
+    fillLibraryForm(libraryData.company || {});
+    renderLibraryAssets();
+  } catch (error) {
+    libraryStatus.textContent = `资料库读取失败：${error.message}`;
+  }
 }
 
 async function loadProjectData(project) {
@@ -231,6 +253,11 @@ function renderAnalysisTabs() {
 
 function renderAnalysisContent(key) {
   if (key === "checklist") return checklistContent();
+  const data = safeAnalysis();
+  const structured = safeStructured();
+  if (key === "insight" && Object.keys(structured).length) {
+    return renderStructuredInsight(structured, data);
+  }
   if (key === "insight") {
     return `
       <div class="risk-bar"><span class="risk-good">◎ 建议参与</span><span class="risk-badge">控标风险：低 ↻</span></div>
@@ -241,7 +268,6 @@ function renderAnalysisContent(key) {
       </div>
     `;
   }
-  const data = safeAnalysis();
   const contentMap = {
     qualification: data.qualification || ["供应商应具备独立承担民事责任能力。", "需提供营业执照、资质证书及相关证明材料。"],
     reject: data.rejection || ["未按要求签字盖章可能导致响应无效。", "资格证明材料缺失或过期存在废标风险。"],
@@ -251,6 +277,31 @@ function renderAnalysisContent(key) {
     price: data.price || ["报价应包含完成本项目所需全部费用，并保持大小写、明细表一致。"],
   };
   return contentMap[key].map((item, index) => `<div class="tab-card"><strong>${index + 1}. ${escapeHtml(item)}</strong></div>`).join("");
+}
+
+function renderStructuredInsight(structured, sections) {
+  const rows = [
+    ["项目名称", structured.project_name],
+    ["项目编号", structured.project_no],
+    ["采购人", structured.purchaser],
+    ["代理机构", structured.agency],
+    ["预算/限价", structured.budget],
+    ["服务期限", structured.service_period],
+    ["投标截止", structured.bid_deadline],
+    ["开标/递交地点", structured.bid_location],
+  ].filter(([, value]) => value);
+  const risk = (safeFullAnalysis().risks || [])[0];
+  return `
+    <div class="risk-bar"><span class="risk-good">◎ ${risk ? "需复核重点风险" : "建议参与"}</span><span class="risk-badge">结构化字段：${rows.length} 项</span></div>
+    <div class="tab-card">
+      ${rows.map(([label, value]) => `<p><strong>${label}：</strong>${escapeHtml(value)}</p>`).join("") || "<p>暂未识别到明确项目字段，请人工补充。</p>"}
+    </div>
+    <div class="bullet-list">
+      <div>资格项 ${sections.qualification?.length || 0} 条，废标风险 ${sections.rejection?.length || 0} 条，评分项 ${sections.scoring?.length || 0} 条</div>
+      <div>建议先核对项目名称、编号、采购人、预算、服务期和截止时间，再进入标书制作。</div>
+      <div>评分项会进入章节级生成，作为技术方案和专项响应的写作依据。</div>
+    </div>
+  `;
 }
 
 function checklistContent() {
@@ -270,6 +321,26 @@ function checklistContent() {
 }
 
 function renderOutline() {
+  const chapters = getChapters();
+  if (chapters.length) {
+    selectedChapterId = selectedChapterId || chapters[0].id;
+    outlineList.innerHTML = `<ol class="chapter-list">${chapters.map((chapter) => `
+      <li>
+        <button class="${chapter.id === selectedChapterId ? "active" : ""}" data-chapter-id="${escapeHtml(chapter.id)}">
+          <strong>${escapeHtml(chapter.title)}</strong>
+          <small>${escapeHtml(chapter.kind || "章节")}</small>
+        </button>
+      </li>`).join("")}</ol>`;
+    outlineList.querySelectorAll("[data-chapter-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        selectedChapterId = button.dataset.chapterId;
+        renderOutline();
+        renderSelectedChapter();
+      });
+    });
+    renderSelectedChapter();
+    return;
+  }
   const outline = currentProjectData?.outline || demoData().outline;
   const lines = outline.split("\n").filter((line) => /^#{1,4}\s/.test(line)).slice(0, 24);
   outlineList.innerHTML = lines.length
@@ -289,9 +360,41 @@ function updateEstimate() {
 
 function generateBidBody() {
   lengthModal.classList.add("hidden");
+  renderSelectedChapter();
+  document.getElementById("downloadBidBtn").classList.remove("disabled");
+}
+
+function renderSelectedChapter() {
+  const chapters = getChapters();
+  const chapter = chapters.find((item) => item.id === selectedChapterId) || chapters[0];
+  if (chapter?.content) {
+    bodyPreviewText.innerHTML = `
+      <article class="chapter-preview">
+        <button class="tool-btn" id="regenChapterBtn">↻ 重新生成本章</button>
+        <pre>${escapeHtml(chapter.content)}</pre>
+      </article>`;
+    document.getElementById("regenChapterBtn").addEventListener("click", regenerateSelectedChapter);
+    return;
+  }
   const draft = currentProjectData?.draft || demoData().draft;
   bodyPreviewText.textContent = draft.slice(0, 5000) || "已生成正文内容，可继续人工修改后再导出 Word。";
-  document.getElementById("downloadBidBtn").classList.remove("disabled");
+}
+
+async function regenerateSelectedChapter() {
+  if (!currentProject || currentProject.demo || !selectedChapterId) return;
+  bodyPreviewText.textContent = "正在重新生成本章...";
+  const response = await fetch("/api/generate-chapter", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project: currentProject.name, chapter_id: selectedChapterId }),
+  });
+  const data = await response.json();
+  if (!response.ok || data.status === "error") {
+    bodyPreviewText.textContent = data.message || "章节生成失败";
+    return;
+  }
+  currentProjectData.chapters = data.chapters || [];
+  renderOutline();
 }
 
 function renderOutputs() {
@@ -313,6 +416,83 @@ function safeAnalysis() {
     return parsed.sections || parsed || {};
   } catch {
     return {};
+  }
+}
+
+function safeFullAnalysis() {
+  try {
+    return JSON.parse(currentProjectData?.analysis || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function safeStructured() {
+  return safeFullAnalysis().structured || {};
+}
+
+function getChapters() {
+  if (Array.isArray(currentProjectData?.chapters)) return currentProjectData.chapters;
+  try {
+    const chapters = JSON.parse(currentProjectData?.chapters || "[]");
+    return Array.isArray(chapters) ? chapters : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveLibraryCompany(event) {
+  event.preventDefault();
+  libraryStatus.textContent = "正在保存资料库...";
+  const data = Object.fromEntries(new FormData(libraryForm).entries());
+  const response = await fetch("/api/library", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ section: "company", data }),
+  });
+  const result = await response.json();
+  if (!response.ok || result.status === "error") {
+    libraryStatus.textContent = result.message || "保存失败";
+    return;
+  }
+  libraryData = result.library || {};
+  libraryStatus.textContent = "已保存企业信息，后续生成标书会自动引用。";
+  renderLibraryAssets();
+}
+
+function fillLibraryForm(data) {
+  libraryForm.querySelectorAll("[name]").forEach((input) => {
+    input.value = data[input.name] || "";
+  });
+}
+
+async function uploadLibraryFiles(input) {
+  if (!input.files.length) return;
+  libraryStatus.textContent = "正在上传资料附件...";
+  const form = new FormData();
+  form.append("category", input.dataset.uploadCategory);
+  Array.from(input.files).forEach((file) => form.append("files", file));
+  const response = await fetch("/api/library/upload", { method: "POST", body: form });
+  const result = await response.json();
+  if (!response.ok || result.status === "error") {
+    libraryStatus.textContent = result.message || "上传失败";
+    return;
+  }
+  libraryData = result.library || {};
+  const names = Array.from(input.files).map((file) => file.name).join("、");
+  const target = input.id === "businessLicenseUpload" ? "businessLicenseName" : "accountLicenseName";
+  setText(target, `已上传：${names}`);
+  libraryStatus.textContent = "资料附件已保存。";
+  renderLibraryAssets();
+  input.value = "";
+}
+
+function renderLibraryAssets() {
+  const assets = libraryData.assets || {};
+  const licenses = assets.licenses || [];
+  if (licenses.length) {
+    setText("businessLicenseName", `已保存 ${licenses.length} 个证照附件，点击可继续上传。`);
+    setText("accountLicenseName", `已保存 ${licenses.length} 个证照附件，点击可继续上传。`);
   }
 }
 
@@ -358,3 +538,4 @@ function escapeHtml(value) {
 }
 
 loadProjects();
+loadLibrary();
