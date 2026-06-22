@@ -25,6 +25,11 @@ const libraryTabs = document.getElementById("libraryTabs");
 const libraryFields = document.getElementById("libraryFields");
 const libraryFormTitle = document.getElementById("libraryFormTitle");
 const libraryAssetList = document.getElementById("libraryAssetList");
+const checkTenderInput = document.getElementById("checkTenderInput");
+const checkBidInput = document.getElementById("checkBidInput");
+const checkBidList = document.getElementById("checkBidList");
+const checkTenderStatus = document.getElementById("checkTenderStatus");
+const checkTenderHint = document.getElementById("checkTenderHint");
 
 let projects = [];
 let currentProject = null;
@@ -34,6 +39,11 @@ let libraryData = {};
 let selectedChapterId = "";
 let pendingMakeProject = null;
 let activeLibraryTab = "company";
+let checkBidFiles = [];
+
+if (window.location.protocol === "file:") {
+  document.getElementById("serverWarning")?.classList.remove("hidden");
+}
 
 const demoProject = {
   name: "云南省第一人民医院辅助类服务项目咨询公告 - 云南省第一人民医院.pdf",
@@ -80,6 +90,8 @@ document.getElementById("startCheckBtn").addEventListener("click", () => {
 document.getElementById("saveChapterBtn").addEventListener("click", saveSelectedChapter);
 document.getElementById("runReviewBtn").addEventListener("click", runUpgradedReview);
 document.getElementById("exportFinalBtn").addEventListener("click", exportFinalDocx);
+checkTenderInput.addEventListener("change", handleCheckTenderUpload);
+checkBidInput.addEventListener("change", handleCheckBidUpload);
 
 document.querySelectorAll(".length-grid button").forEach((button) => {
   button.addEventListener("click", () => {
@@ -247,10 +259,91 @@ function fileCard(project, mode) {
 function renderDetail() {
   const title = cleanTitle(currentProject?.name || demoProject.name);
   document.getElementById("checkTenderName").textContent = `（定稿）${title}`;
-  document.getElementById("checkBidName").textContent = `（定稿）${title}`;
+  checkTenderStatus.textContent = currentProject?.demo ? "未解读" : "已解读";
+  checkTenderHint.textContent = currentProject?.demo ? "当前为未解读或摘要暂不可用，开始检查时将先进行智能解读。" : "当前招标文件已完成解读，可重新上传替换。";
+  if (!checkBidFiles.length) {
+    renderCheckBidList([{ name: `（定稿）${title}`, size: 487 * 1024, saved: true }]);
+  }
   sourcePreview.innerHTML = renderDocumentPreview(title);
   renderAnalysisSummary();
   renderAnalysisTabs();
+}
+
+async function handleCheckTenderUpload() {
+  const file = checkTenderInput.files[0];
+  if (!file) return;
+  if (window.location.protocol === "file:") {
+    checkTenderHint.textContent = "当前是静态文件预览，请打开 http://127.0.0.1:8787/ 后再上传。";
+    checkTenderInput.value = "";
+    return;
+  }
+  document.getElementById("checkTenderName").textContent = file.name;
+  checkTenderStatus.textContent = "解读中";
+  checkTenderHint.textContent = "正在上传并解读招标文件...";
+  const form = new FormData();
+  form.append("tender", file);
+  try {
+    const response = await fetch("/api/run", { method: "POST", body: form });
+    const data = await response.json();
+    if (!response.ok || data.status === "error") throw new Error(data.message || "上传失败");
+    await loadProjects(data.project);
+    showView("check");
+    checkTenderStatus.textContent = "已解读";
+    checkTenderHint.textContent = "新招标文件已完成解读，可开始合规检查。";
+  } catch (error) {
+    checkTenderStatus.textContent = "失败";
+    checkTenderHint.textContent = error.message;
+  } finally {
+    checkTenderInput.value = "";
+  }
+}
+
+async function handleCheckBidUpload() {
+  const files = Array.from(checkBidInput.files || []);
+  if (!files.length) return;
+  const existing = new Set(checkBidFiles.map((file) => `${file.name}:${file.size}`));
+  files.forEach((file) => {
+    const key = `${file.name}:${file.size}`;
+    if (!existing.has(key)) {
+      existing.add(key);
+      checkBidFiles.push(file);
+    }
+  });
+  renderCheckBidList(checkBidFiles);
+  if (window.location.protocol !== "file:" && currentProject && !currentProject.demo) {
+    const form = new FormData();
+    form.append("project", currentProject.name);
+    checkBidFiles.forEach((file) => form.append("files", file));
+    try {
+      const response = await fetch("/api/check-bids", { method: "POST", body: form });
+      const data = await response.json();
+      if (!response.ok || data.status === "error") throw new Error(data.message || "上传失败");
+      checkTenderHint.textContent = `已保存 ${data.saved.length} 个标书文件，可运行升级版审查。`;
+    } catch (error) {
+      checkTenderHint.textContent = error.message;
+    }
+  } else if (window.location.protocol === "file:") {
+    checkTenderHint.textContent = "已选择文件，但静态文件预览无法保存上传；请打开 http://127.0.0.1:8787/。";
+  }
+  checkBidInput.value = "";
+}
+
+function renderCheckBidList(files) {
+  checkBidList.innerHTML = files.map((file, index) => `
+    <div class="selected-doc removable">
+      <span>▤</span>
+      <strong>${escapeHtml(file.name)}</strong>
+      <small>${formatFileSize(file.size || 0)}</small>
+      <button type="button" data-remove-check-bid="${index}">×</button>
+    </div>
+  `).join("");
+  checkBidList.querySelectorAll("[data-remove-check-bid]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.dataset.removeCheckBid);
+      checkBidFiles.splice(index, 1);
+      renderCheckBidList(checkBidFiles);
+    });
+  });
 }
 
 function renderAnalysisSummary() {
@@ -754,6 +847,12 @@ function cleanTitle(name) {
 function formatTime(ts) {
   const date = new Date((ts || Date.now() / 1000) * 1000);
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+}
+
+function formatFileSize(size) {
+  if (!size) return "0 KB";
+  if (size >= 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.ceil(size / 1024)} KB`;
 }
 
 function setText(id, value) {

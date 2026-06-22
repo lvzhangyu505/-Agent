@@ -128,6 +128,17 @@ button { cursor: pointer; }
   overflow: hidden;
 }
 
+.server-warning {
+  margin: 14px 0;
+  border: 1px solid #f2a29a;
+  background: #fff8f7;
+  color: #b42318;
+  border-radius: 14px;
+  padding: 12px 16px;
+  font-weight: 800;
+}
+.server-warning.hidden { display: none; }
+
 .view { display: none; }
 .active-view { display: block; }
 
@@ -669,8 +680,26 @@ button:disabled {
 }
 .selected-doc strong { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .selected-doc em { font-style: normal; border: 1px solid #b7def7; background: #eef8ff; color: #126dbf; border-radius: 999px; padding: 5px 9px; }
-.selected-doc button { border: 0; background: transparent; color: var(--muted); }
+.selected-doc button,
+.selected-doc .inline-upload {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.selected-doc .inline-upload:hover { color: var(--gold); }
 .selected-doc small { display: block; color: var(--muted); }
+.inline-file-btn {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  cursor: pointer;
+}
+.check-bid-list {
+  display: grid;
+  gap: 8px;
+}
 .check-form hr { border: 0; border-top: 1px solid var(--line); margin: 28px 0; }
 .check-form .wide-input { margin: 6px 0 8px; height: 44px; }
 .switch-row { display: flex; gap: 32px; margin: 16px 0 24px; }

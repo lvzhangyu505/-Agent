@@ -45,6 +45,9 @@
       </aside>
 
       <main class="main">
+        <div id="serverWarning" class="server-warning hidden">
+          当前是静态文件预览，上传、保存、审查和导出需要打开本地服务地址：http://127.0.0.1:8787/
+        </div>
         <section id="interpret" class="view active-view">
           <div class="crumbs"><span class="crumb-pill">智能解读</span><span>智能解读</span></div>
           <form id="interpretForm" class="upload-band" enctype="multipart/form-data">
@@ -150,12 +153,16 @@
           <div class="check-workspace">
           <div class="check-form">
             <h2>招标文件（DOC / DOCX）</h2>
-            <div class="selected-doc"><span>▤</span><strong id="checkTenderName">（定稿）昆明市中医医院2026年门诊导医服务、消毒供应...</strong><em>未解读</em><button>重新上传</button></div>
-            <p>当前为未解读或摘要暂不可用，开始检查时将先进行智能解读。</p>
+            <div class="selected-doc"><span>▤</span><strong id="checkTenderName">（定稿）昆明市中医医院2026年门诊导医服务、消毒供应...</strong><em id="checkTenderStatus">未解读</em><label class="inline-upload" for="checkTenderInput">重新上传</label></div>
+            <input id="checkTenderInput" type="file" accept=".doc,.docx,.pdf,.txt,.md" hidden />
+            <p id="checkTenderHint">当前为未解读或摘要暂不可用，开始检查时将先进行智能解读。</p>
             <hr />
-            <h2>标书（可多选，DOC / DOCX） <button class="white-btn">选择标书文件</button></h2>
+            <h2>标书（可多选，DOC / DOCX） <label class="white-btn inline-file-btn" for="checkBidInput">选择标书文件</label></h2>
+            <input id="checkBidInput" type="file" accept=".doc,.docx,.pdf,.txt,.md" multiple hidden />
             <p>可多次选择追加；同名同大小会自动去重。</p>
-            <div class="selected-doc removable"><span>▤</span><strong id="checkBidName">（定稿）昆明市中医医院2026年门诊导医服务、消毒供应...</strong><small>487.0 KB</small><button>×</button></div>
+            <div id="checkBidList" class="check-bid-list">
+              <div class="selected-doc removable"><span>▤</span><strong id="checkBidName">（定稿）昆明市中医医院2026年门诊导医服务、消毒供应...</strong><small>487.0 KB</small><button type="button" data-remove-check-bid="0">×</button></div>
+            </div>
             <hr />
             <h2>敏感单位名称（可选）</h2>
             <input class="wide-input" placeholder="逗号分隔，例如：甲公司、乙设计院" />

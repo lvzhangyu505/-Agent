@@ -214,6 +214,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/library/upload":
                 self.handle_library_upload()
                 return
+            if path == "/api/check-bids":
+                self.handle_check_bids()
+                return
             if path == "/api/generate-chapter":
                 self.handle_generate_chapter()
                 return
@@ -315,6 +318,29 @@ class Handler(BaseHTTPRequestHandler):
             if path:
                 saved.append(str(path.relative_to(ROOT)))
         self.send_json({"saved": saved, "library": library_payload()})
+
+    def handle_check_bids(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        if length > MAX_UPLOAD_MB * 1024 * 1024:
+            self.send_error_json(413, f"上传文件总大小超过 {MAX_UPLOAD_MB}MB")
+            return
+        form = self.parse_multipart(length)
+        project = self.first_text(form, "project")
+        if not project:
+            self.send_error_json(400, "缺少项目名称")
+            return
+        dest = safe_inside(agent.DIRS["outputs"] / project / "审查标书")
+        saved = []
+        for field in form.get("files", []):
+            if isinstance(field, UploadedFile):
+                path = save_upload(field, dest)
+                if path:
+                    saved.append({
+                        "name": path.name,
+                        "path": str(path.relative_to(ROOT)),
+                        "size": path.stat().st_size,
+                    })
+        self.send_json({"project": project, "saved": saved})
 
     def handle_generate_chapter(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
