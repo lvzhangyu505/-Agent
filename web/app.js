@@ -11,13 +11,20 @@ const historyList = document.getElementById("historyList");
 const sourcePreview = document.getElementById("sourcePreview");
 const analysisTabs = document.getElementById("analysisTabs");
 const analysisContent = document.getElementById("analysisContent");
+const analysisSummary = document.getElementById("analysisSummary");
 const outlineList = document.getElementById("outlineList");
-const bodyPreviewText = document.getElementById("bodyPreviewText");
+const chapterEditor = document.getElementById("chapterEditor");
+const chapterRefs = document.getElementById("chapterRefs");
+const chapterEditorTitle = document.getElementById("chapterEditorTitle");
 const lengthModal = document.getElementById("lengthModal");
 const customPages = document.getElementById("customPages");
 const wordEstimate = document.getElementById("wordEstimate");
 const libraryForm = document.getElementById("libraryForm");
 const libraryStatus = document.getElementById("libraryStatus");
+const libraryTabs = document.getElementById("libraryTabs");
+const libraryFields = document.getElementById("libraryFields");
+const libraryFormTitle = document.getElementById("libraryFormTitle");
+const libraryAssetList = document.getElementById("libraryAssetList");
 
 let projects = [];
 let currentProject = null;
@@ -26,6 +33,7 @@ let currentAnalysisTab = "insight";
 let libraryData = {};
 let selectedChapterId = "";
 let pendingMakeProject = null;
+let activeLibraryTab = "company";
 
 const demoProject = {
   name: "云南省第一人民医院辅助类服务项目咨询公告 - 云南省第一人民医院.pdf",
@@ -44,6 +52,8 @@ const tabLabels = [
   ["key", "关键项要求"],
   ["business", "商务条款要求"],
   ["price", "报价要求"],
+  ["materials", "材料清单"],
+  ["timeline", "时间节点"],
   ["checklist", "标书检查清单"],
 ];
 
@@ -60,15 +70,16 @@ document.getElementById("hideAnalysisBtn").addEventListener("click", () => {
 });
 
 document.getElementById("openLengthModal").addEventListener("click", openLengthModal);
-document.getElementById("centerGenerateBtn").addEventListener("click", openLengthModal);
 document.getElementById("regenOutlineBtn").addEventListener("click", openLengthModal);
 document.getElementById("cancelLength").addEventListener("click", closeLengthModal);
 document.getElementById("confirmLength").addEventListener("click", generateBidBody);
 document.getElementById("startCheckBtn").addEventListener("click", () => {
-  showView("read-detail");
-  currentAnalysisTab = "checklist";
-  renderAnalysisTabs();
+  showView("check");
+  runUpgradedReview();
 });
+document.getElementById("saveChapterBtn").addEventListener("click", saveSelectedChapter);
+document.getElementById("runReviewBtn").addEventListener("click", runUpgradedReview);
+document.getElementById("exportFinalBtn").addEventListener("click", exportFinalDocx);
 
 document.querySelectorAll(".length-grid button").forEach((button) => {
   button.addEventListener("click", () => {
@@ -89,7 +100,13 @@ document.querySelectorAll(".numbering button").forEach((button) => {
 customPages.addEventListener("input", updateEstimate);
 
 libraryForm.addEventListener("submit", saveLibraryCompany);
-document.getElementById("resetLibraryBtn").addEventListener("click", () => fillLibraryForm(libraryData.company || {}));
+document.getElementById("resetLibraryBtn").addEventListener("click", () => renderLibraryForm());
+libraryTabs.querySelectorAll("[data-library-tab]").forEach((button) => {
+  button.addEventListener("click", () => {
+    activeLibraryTab = button.dataset.libraryTab;
+    renderLibraryForm();
+  });
+});
 document.querySelectorAll("[data-upload-category]").forEach((input) => {
   input.addEventListener("change", () => uploadLibraryFiles(input));
 });
@@ -149,6 +166,7 @@ async function loadLibrary() {
     const data = await response.json();
     libraryData = data.library || {};
     fillLibraryForm(libraryData.company || {});
+    renderLibraryForm();
     renderLibraryAssets();
   } catch (error) {
     libraryStatus.textContent = `资料库读取失败：${error.message}`;
@@ -169,6 +187,7 @@ function renderAll() {
   renderCards();
   renderDetail();
   renderOutline();
+  renderReview();
   renderOutputs();
 }
 
@@ -230,7 +249,23 @@ function renderDetail() {
   document.getElementById("checkTenderName").textContent = `（定稿）${title}`;
   document.getElementById("checkBidName").textContent = `（定稿）${title}`;
   sourcePreview.innerHTML = renderDocumentPreview(title);
+  renderAnalysisSummary();
   renderAnalysisTabs();
+}
+
+function renderAnalysisSummary() {
+  const analysis = safeFullAnalysis();
+  const structured = safeStructured();
+  const cards = [
+    ["评分项", (analysis.scoring_items || []).length],
+    ["废标项", (analysis.sections?.rejection || []).length],
+    ["材料项", (analysis.material_items || []).length],
+    ["时间节点", (analysis.timeline_items || []).length],
+  ];
+  analysisSummary.innerHTML = `
+    ${cards.map(([label, value]) => `<div><span>${label}</span><strong>${value}</strong></div>`).join("")}
+    <div class="summary-wide"><span>项目</span><strong>${escapeHtml(structured.project_name || currentProject?.name || "未识别")}</strong></div>
+  `;
 }
 
 function renderDocumentPreview(title) {
@@ -262,6 +297,7 @@ function renderAnalysisTabs() {
 function renderAnalysisContent(key) {
   if (key === "checklist") return checklistContent();
   const data = safeAnalysis();
+  const full = safeFullAnalysis();
   const structured = safeStructured();
   if (key === "insight" && Object.keys(structured).length) {
     return renderStructuredInsight(structured, data);
@@ -284,7 +320,35 @@ function renderAnalysisContent(key) {
     business: data.business || ["服务期限、付款方式、履约保证、合同条款需逐项响应。"],
     price: data.price || ["报价应包含完成本项目所需全部费用，并保持大小写、明细表一致。"],
   };
+  if (key === "score") return renderScoreTable(full.scoring_items || data.scoring || []);
+  if (key === "reject") return renderRequirementTable("废标项", data.rejection || []);
+  if (key === "materials") return renderMaterialTable(full.material_items || []);
+  if (key === "timeline") return renderTimelineTable(full.timeline_items || []);
   return contentMap[key].map((item, index) => `<div class="tab-card"><strong>${index + 1}. ${escapeHtml(item)}</strong></div>`).join("");
+}
+
+function renderScoreTable(items) {
+  if (!items.length) return `<div class="warn-box">暂未识别到评分表，请人工确认招标文件是否另有附件。</div>`;
+  const rows = items.map((item, index) => {
+    if (typeof item === "string") return `<tr><td>${index + 1}</td><td>${escapeHtml(item)}</td><td></td><td>技术服务方案</td><td>正文方案</td></tr>`;
+    return `<tr><td>${index + 1}</td><td>${escapeHtml(item.item || "")}</td><td>${escapeHtml(item.score || "")}</td><td>${escapeHtml(item.response_chapter || "")}</td><td>${escapeHtml(item.evidence || "")}</td></tr>`;
+  }).join("");
+  return `<table class="data-table"><thead><tr><th>#</th><th>评分项</th><th>分值</th><th>响应章节</th><th>证明材料</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderRequirementTable(title, items) {
+  if (!items.length) return `<div class="warn-box">暂未识别到${title}。</div>`;
+  return `<table class="data-table"><thead><tr><th>#</th><th>${title}原文</th><th>风险</th><th>处理动作</th></tr></thead><tbody>${items.map((item, index) => `<tr><td>${index + 1}</td><td>${escapeHtml(item)}</td><td><span class="risk-high">高</span></td><td>逐条响应并检查证明材料</td></tr>`).join("")}</tbody></table>`;
+}
+
+function renderMaterialTable(items) {
+  if (!items.length) return `<div class="warn-box">暂未生成材料清单。</div>`;
+  return `<table class="data-table"><thead><tr><th>材料</th><th>类别</th><th>来源</th><th>风险</th><th>建议</th></tr></thead><tbody>${items.map((item) => `<tr><td>${escapeHtml(item.name || "")}</td><td>${escapeHtml(item.category || "")}</td><td>${escapeHtml(item.source || "")}</td><td>${escapeHtml(item.risk || "")}</td><td>${escapeHtml(item.advice || "")}</td></tr>`).join("")}</tbody></table>`;
+}
+
+function renderTimelineTable(items) {
+  if (!items.length) return `<div class="warn-box">暂未识别到明确时间节点。</div>`;
+  return `<table class="data-table"><thead><tr><th>节点</th><th>时间/原文</th><th>负责人</th><th>风险</th><th>动作</th></tr></thead><tbody>${items.map((item) => `<tr><td>${escapeHtml(item.node || "")}</td><td>${escapeHtml(item.time || "")}</td><td>${escapeHtml(item.owner || "")}</td><td>${escapeHtml(item.risk || "")}</td><td>${escapeHtml(item.action || "")}</td></tr>`).join("")}</tbody></table>`;
 }
 
 function renderStructuredInsight(structured, sections) {
@@ -396,21 +460,32 @@ function renderSelectedChapter() {
   const chapters = getChapters();
   const chapter = chapters.find((item) => item.id === selectedChapterId) || chapters[0];
   if (chapter?.content) {
-    bodyPreviewText.innerHTML = `
-      <article class="chapter-preview">
-        <button class="tool-btn" id="regenChapterBtn">↻ 重新生成本章</button>
-        <pre>${escapeHtml(chapter.content)}</pre>
-      </article>`;
-    document.getElementById("regenChapterBtn").addEventListener("click", regenerateSelectedChapter);
+    chapterEditorTitle.textContent = chapter.title || "正文内容编辑";
+    chapterEditor.value = chapter.content;
+    chapterRefs.innerHTML = renderChapterRefs(chapter);
+    document.getElementById("regenChapterBtn")?.addEventListener("click", regenerateSelectedChapter);
     return;
   }
   const draft = currentProjectData?.draft || demoData().draft;
-  bodyPreviewText.textContent = draft.slice(0, 5000) || "已生成正文内容，可继续人工修改后再导出 Word。";
+  chapterEditor.value = draft.slice(0, 5000) || "已生成正文内容，可继续人工修改后再导出 Word。";
+  chapterRefs.innerHTML = "";
+}
+
+function renderChapterRefs(chapter) {
+  const refs = [
+    ...(chapter.requirements || []).slice(0, 8).map((item) => ({ title: "招标要求", text: item })),
+    ...(safeFullAnalysis().material_items || []).slice(0, 5).map((item) => ({ title: item.category || "材料", text: `${item.name}：${item.advice}` })),
+  ];
+  return `
+    <h3>引用与检查</h3>
+    <button class="tool-btn" id="regenChapterBtn">重新生成本章</button>
+    ${refs.map((item) => `<div class="ref-card"><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.text || "")}</p></div>`).join("") || "<p>暂无引用要求。</p>"}
+  `;
 }
 
 async function regenerateSelectedChapter() {
   if (!currentProject || currentProject.demo || !selectedChapterId) return;
-  bodyPreviewText.textContent = "正在重新生成本章...";
+  chapterEditor.value = "正在重新生成本章...";
   const response = await fetch("/api/generate-chapter", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -418,10 +493,28 @@ async function regenerateSelectedChapter() {
   });
   const data = await response.json();
   if (!response.ok || data.status === "error") {
-    bodyPreviewText.textContent = data.message || "章节生成失败";
+    chapterEditor.value = data.message || "章节生成失败";
     return;
   }
   currentProjectData.chapters = data.chapters || [];
+  renderOutline();
+}
+
+async function saveSelectedChapter() {
+  if (!currentProject || currentProject.demo || !selectedChapterId) return;
+  libraryStatus.textContent = "正在保存章节...";
+  const response = await fetch("/api/save-chapter", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project: currentProject.name, chapter_id: selectedChapterId, content: chapterEditor.value }),
+  });
+  const data = await response.json();
+  if (!response.ok || data.status === "error") {
+    libraryStatus.textContent = data.message || "章节保存失败";
+    return;
+  }
+  currentProjectData.chapters = data.chapters || [];
+  libraryStatus.textContent = "章节已保存。";
   renderOutline();
 }
 
@@ -436,6 +529,60 @@ function renderOutputs() {
     return `<div class="simple-card"><strong>${escapeHtml(cleanTitle(project.name))}</strong><p>${project.demo ? "示例数据，上传文件后这里会显示真实下载链接。" : links}</p></div>`;
   }).join("");
   historyList.innerHTML = projects.map((project) => `<div class="simple-card"><strong>${escapeHtml(cleanTitle(project.name))}</strong><p>可作为后续类似项目的历史标书素材。</p></div>`).join("");
+}
+
+async function runUpgradedReview() {
+  if (!currentProject || currentProject.demo) return;
+  document.getElementById("reviewIssues").innerHTML = `<div class="warn-box">正在运行升级版审查...</div>`;
+  const response = await fetch("/api/run-review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project: currentProject.name }),
+  });
+  const data = await response.json();
+  if (!response.ok || data.status === "error") {
+    document.getElementById("reviewIssues").innerHTML = `<div class="warn-box">${escapeHtml(data.message || "审查失败")}</div>`;
+    return;
+  }
+  currentProjectData.review = data.review;
+  renderReview();
+}
+
+function renderReview() {
+  const review = currentProjectData?.review || {};
+  const summary = review.summary || {};
+  const issues = review.issues || [];
+  document.getElementById("reviewSummary").innerHTML = `
+    <div><span>问题总数</span><strong>${summary.total || 0}</strong></div>
+    <div><span>高风险</span><strong>${summary.high || 0}</strong></div>
+    <div><span>中风险</span><strong>${summary.medium || 0}</strong></div>
+    <div><span>低风险</span><strong>${summary.low || 0}</strong></div>
+  `;
+  document.getElementById("reviewIssues").innerHTML = issues.length
+    ? issues.map((item) => `<article class="issue-card ${item.level === "高" ? "issue-high" : ""}">
+        <header><strong>${escapeHtml(item.rule)}</strong><span>${escapeHtml(item.level)} / ${escapeHtml(item.status)}</span></header>
+        <p><b>位置：</b>${escapeHtml(item.location)}</p>
+        <p><b>招标要求：</b>${escapeHtml(item.requirement)}</p>
+        <p><b>文件现状：</b>${escapeHtml(item.current)}</p>
+        <p><b>修改动作：</b>${escapeHtml(item.action)}</p>
+        <p><b>复核人：</b>${escapeHtml(item.reviewer)}</p>
+      </article>`).join("")
+    : `<div class="warn-box">尚未运行升级版审查。</div>`;
+}
+
+async function exportFinalDocx() {
+  if (!currentProject || currentProject.demo) return;
+  const response = await fetch("/api/export-final", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project: currentProject.name }),
+  });
+  const data = await response.json();
+  if (!response.ok || data.status === "error") {
+    document.getElementById("reviewIssues").innerHTML = `<div class="warn-box">${escapeHtml(data.message || "导出失败")}</div>`;
+    return;
+  }
+  window.location.href = `/download?path=${encodeURIComponent(data.docx)}`;
 }
 
 function safeAnalysis() {
@@ -472,11 +619,11 @@ function getChapters() {
 async function saveLibraryCompany(event) {
   event.preventDefault();
   libraryStatus.textContent = "正在保存资料库...";
-  const data = Object.fromEntries(new FormData(libraryForm).entries());
+  const data = collectLibrarySectionData();
   const response = await fetch("/api/library", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ section: "company", data }),
+    body: JSON.stringify({ section: activeLibraryTab, data }),
   });
   const result = await response.json();
   if (!response.ok || result.status === "error") {
@@ -484,14 +631,58 @@ async function saveLibraryCompany(event) {
     return;
   }
   libraryData = result.library || {};
-  libraryStatus.textContent = "已保存企业信息，后续生成标书会自动引用。";
+  libraryStatus.textContent = "已保存资料库，后续生成标书会自动引用。";
   renderLibraryAssets();
 }
 
-function fillLibraryForm(data) {
-  libraryForm.querySelectorAll("[name]").forEach((input) => {
-    input.value = data[input.name] || "";
+function collectLibrarySectionData() {
+  const values = {};
+  libraryFields.querySelectorAll("[name]").forEach((input) => {
+    values[input.name] = input.value;
   });
+  if (activeLibraryTab === "company") {
+    document.querySelectorAll(".subform [name]").forEach((input) => {
+      values[input.name] = input.value;
+    });
+  }
+  if (["people", "cases", "certs", "templates"].includes(activeLibraryTab)) {
+    return [values];
+  }
+  return values;
+}
+
+function fillLibraryForm(data) {
+  const source = Array.isArray(data) ? (data[0] || {}) : data;
+  libraryFields.querySelectorAll("[name]").forEach((input) => {
+    input.value = source[input.name] || "";
+  });
+}
+
+function renderLibraryForm() {
+  libraryTabs.querySelectorAll("[data-library-tab]").forEach((button) => button.classList.toggle("active", button.dataset.libraryTab === activeLibraryTab));
+  const configs = {
+    company: { title: "企业信息", fields: [["company_name", "公司名称 *"], ["company_type", "企业类型"], ["business_period", "营业期限"], ["credit_code", "统一社会信用代码"], ["established_at", "成立时间"]] },
+    legal: { title: "法人信息", fields: [["legal_name", "法定代表人姓名 *"], ["legal_id", "身份证号"], ["legal_phone", "联系电话"], ["legal_title", "职务"], ["legal_address", "联系地址"]] },
+    people: { title: "人员库", fields: [["name", "人员姓名 *"], ["role", "拟任岗位"], ["certificate", "证书/职称"], ["experience", "项目经验"], ["note", "备注"]] },
+    certs: { title: "企业资质", fields: [["name", "资质名称 *"], ["number", "证书编号"], ["valid_until", "有效期"], ["issuer", "发证机构"], ["scope", "适用范围"]] },
+    cases: { title: "企业业绩", fields: [["project_name", "项目名称 *"], ["client", "客户/采购人"], ["amount", "合同金额"], ["period", "服务期限"], ["content", "服务内容"]] },
+    templates: { title: "标书模版", fields: [["name", "模板名称 *"], ["type", "模板类型"], ["scope", "适用项目"], ["version", "版本"], ["note", "备注"]] },
+  };
+  const config = configs[activeLibraryTab] || configs.company;
+  libraryFormTitle.textContent = config.title;
+  const fields = config.fields.map(([name, placeholder]) => {
+    return name === "content" || name === "scope" || name === "note" || name === "experience"
+      ? `<textarea name="${name}" placeholder="${placeholder}"></textarea>`
+      : `<input name="${name}" placeholder="${placeholder}" ${name.includes("until") ? "type='date'" : ""} />`;
+  });
+  const rows = [];
+  for (let i = 0; i < fields.length; i += 2) {
+    rows.push(`<div class="two-col">${fields[i]}${fields[i + 1] || ""}</div>`);
+  }
+  libraryFields.innerHTML = rows.join("");
+  document.querySelector(".subform").style.display = activeLibraryTab === "company" ? "grid" : "none";
+  fillLibraryForm(libraryData[activeLibraryTab] || {});
+  renderLibraryAssets();
 }
 
 async function uploadLibraryFiles(input) {
@@ -522,6 +713,15 @@ function renderLibraryAssets() {
     setText("businessLicenseName", `已保存 ${licenses.length} 个证照附件，点击可继续上传。`);
     setText("accountLicenseName", `已保存 ${licenses.length} 个证照附件，点击可继续上传。`);
   }
+  const counts = {
+    certs: Array.isArray(libraryData.certs) ? libraryData.certs.length : 0,
+    cases: Array.isArray(libraryData.cases) ? libraryData.cases.length : 0,
+    templates: Array.isArray(libraryData.templates) ? libraryData.templates.length : 0,
+  };
+  libraryTabs.querySelectorAll("[data-library-tab='certs'] em").forEach((x) => x.textContent = counts.certs);
+  libraryTabs.querySelectorAll("[data-library-tab='cases'] em").forEach((x) => x.textContent = counts.cases);
+  const group = assets[activeLibraryTab] || assets.licenses || [];
+  libraryAssetList.innerHTML = `<h3>已保存附件/素材</h3>${group.length ? group.slice(0, 8).map((file) => `<div class="asset-row"><strong>${escapeHtml(file.name)}</strong><small>${Math.ceil((file.size || 0) / 1024)} KB</small></div>`).join("") : "<p>暂无附件，可点击右侧区域上传。</p>"}`;
 }
 
 function getSourceText() {

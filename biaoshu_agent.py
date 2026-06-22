@@ -234,6 +234,39 @@ def build_scoring_items(lines: Sequence[str]) -> List[Dict[str, str]]:
     return items
 
 
+def build_material_items(sections: Dict[str, List[str]], structured: Dict[str, str]) -> List[Dict[str, str]]:
+    items = [
+        {"name": "营业执照或主体资格证明", "category": "资格材料", "source": "资格条件", "status": "待确认", "risk": "高", "advice": "核对投标主体名称、统一社会信用代码、有效期和盖章。"},
+        {"name": "法定代表人身份证明/授权委托书", "category": "签章授权", "source": "格式要求", "status": "待确认", "risk": "高", "advice": "出现代理人时必须同时检查授权书、身份证明、签字和盖章。"},
+        {"name": "商务条款响应表", "category": "商务响应", "source": "商务条款", "status": "待确认", "risk": "中", "advice": "服务期、付款、验收、违约责任需与招标文件一致。"},
+        {"name": "报价文件/开标一览表", "category": "报价材料", "source": "报价要求", "status": "待确认", "risk": "高", "advice": "总价、分项价、大小写金额和最高限价必须闭环一致。"},
+        {"name": "技术服务方案", "category": "技术响应", "source": "评分办法", "status": "待确认", "risk": "中", "advice": "按评分项组织章节，避免只有模板化描述。"},
+    ]
+    if sections.get("qualification"):
+        items.append({"name": "资格条件逐条证明材料", "category": "资格材料", "source": sections["qualification"][0][:80], "status": "待确认", "risk": "高", "advice": "按资格条款逐项放置证明，不得只写承诺。"})
+    if sections.get("rejection"):
+        items.append({"name": "废标项规避证明/响应", "category": "废标风险", "source": sections["rejection"][0][:80], "status": "待确认", "risk": "高", "advice": "废标项必须逐项复核，形成封标前检查记录。"})
+    if sections.get("format"):
+        items.append({"name": "格式、目录、页码、签章、暗标检查", "category": "格式材料", "source": sections["format"][0][:80], "status": "待确认", "risk": "中", "advice": "导出 Word 后复核目录、页码、页眉页脚和文件属性。"})
+    if structured.get("service_period"):
+        items.append({"name": "服务期限承诺", "category": "商务响应", "source": structured["service_period"], "status": "待确认", "risk": "中", "advice": "所有章节中的服务期限表述需保持一致。"})
+    return items
+
+
+def build_timeline_items(structured: Dict[str, str], sections: Dict[str, List[str]]) -> List[Dict[str, str]]:
+    items: List[Dict[str, str]] = []
+    if structured.get("bid_deadline"):
+        items.append({"node": "投标截止/开标时间", "time": structured["bid_deadline"], "owner": "投标负责人", "risk": "高", "action": "至少提前半天完成最终 PDF/Word、签章、上传或密封。"})
+    if structured.get("service_period"):
+        items.append({"node": "服务期限", "time": structured["service_period"], "owner": "方案负责人", "risk": "中", "action": "技术方案、商务响应和承诺函保持同一服务期。"})
+    for line in sections.get("business", [])[:4]:
+        if any(word in line for word in ["时间", "期限", "日", "递交", "提交", "开标", "验收"]):
+            items.append({"node": "商务时间节点", "time": line[:120], "owner": "商务负责人", "risk": "中", "action": "核对是否需要在响应表或承诺函中单独响应。"})
+    if not items:
+        items.append({"node": "封标前复核", "time": "导出 Word 后", "owner": "投标负责人", "risk": "中", "action": "检查目录、签章、页码、报价、附件和暗标风险。"})
+    return items
+
+
 def guess_response_chapter(line: str) -> str:
     if any(w in line for w in ["业绩", "案例", "合同"]):
         return "企业业绩"
@@ -292,6 +325,8 @@ def analyze_tender(path: Path) -> Tuple[Dict, Path]:
     checklist = build_checklist(sections)
     requirement_items = build_requirement_items(sections)
     scoring_items = build_scoring_items(sections.get("scoring", []))
+    material_items = build_material_items(sections, structured)
+    timeline_items = build_timeline_items(structured, sections)
 
     result = {
         "meta": {
@@ -304,6 +339,8 @@ def analyze_tender(path: Path) -> Tuple[Dict, Path]:
         "sections": sections,
         "requirements": requirement_items,
         "scoring_items": scoring_items,
+        "material_items": material_items,
+        "timeline_items": timeline_items,
         "risks": risks,
         "checklist": checklist,
         "raw_text_sample": text[:3000],
@@ -570,6 +607,139 @@ def generate_chapters(analysis: Dict, out_dir: Path, only_id: str | None = None)
         chapters.append({**item, "content": content, "updated_at": datetime.now().isoformat(timespec="seconds")})
     write_json(path, chapters)
     return chapters
+
+
+def save_chapters(out_dir: Path, chapters: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    for chapter in chapters:
+        chapter["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    write_json(out_dir / "05_章节正文.json", chapters)
+    return chapters
+
+
+def chapters_to_markdown(chapters: Sequence[Dict[str, Any]]) -> str:
+    parts: List[str] = []
+    for chapter in chapters:
+        content = chapter.get("content") or ""
+        if content.strip():
+            parts.append(content.strip())
+    return "\n\n".join(parts).strip() + "\n"
+
+
+def export_chapters_docx(out_dir: Path, template: Path | None = None) -> Path:
+    chapters_path = out_dir / "05_章节正文.json"
+    chapters = json.loads(chapters_path.read_text(encoding="utf-8")) if chapters_path.exists() else []
+    md_path = out_dir / "06_最终章节正文.md"
+    md_path.write_text(chapters_to_markdown(chapters), encoding="utf-8")
+    return export_docx(md_path, out_dir / "完整标书.docx", template)
+
+
+REVIEW_RULES = [
+    ("文件版本与范围确认", "确认招标文件版本、投标文件版本、项目/分包、采购人、投标人、截止时间和本次审查范围，防止审错版本。"),
+    ("废标与资格条件优先", "先提取否决条款、资格条件、实质性要求和带特殊标记的格式，再检查对应证明材料是否存在、有效、主体一致。"),
+    ("逐页逐表非空检查", "对每张表逐字段确认名称、编号、金额、数量、日期、勾选、签字、盖章是否完整；空白表不得因模板存在被视为已响应。"),
+    ("全文结构与编号检查", "核对目录、章/节编号、页码、书签、正文顺序；检查错误书签、跳号、重复章节和错分包内容。"),
+    ("重复内容与模板残留检查", "搜索示例文字、括号占位符、下划线、连续省略号、其他项目/医院名称、错误表名和重复表。"),
+    ("横向一致性检查", "统一核对公司名称、项目名称、采购人名称、分包名称、服务期、服务地点、人员数量、报价金额、日期和承诺内容。"),
+    ("报价闭环检查", "开标一览表、分项报价表、单价/数量/总价、大小写金额、最高限价和正文承诺必须闭环一致。"),
+    ("授权与签章依赖检查", "出现代理人时，必须联动检查授权书、法人及代理人身份证明、签字盖章和电子签章；每份承诺函也要逐一核对。"),
+    ("输出可复核问题单", "每项至少写明页码/位置、招标要求、文件现状、风险、修改动作和复核人；区分确定问题、待确认和仅建议优化。"),
+]
+
+
+def upgraded_review(analysis: Dict, chapters: Sequence[Dict[str, Any]], library: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    library = library or {}
+    text = chapters_to_markdown(chapters) if chapters else ""
+    structured = analysis.get("structured", {})
+    sections = analysis.get("sections", {})
+    material_items = analysis.get("material_items") or build_material_items(sections, structured)
+    issues: List[Dict[str, str]] = []
+
+    def add(rule: str, level: str, status: str, requirement: str, current: str, action: str, location: str = "全文件") -> None:
+        issues.append({
+            "rule": rule,
+            "level": level,
+            "status": status,
+            "location": location,
+            "requirement": requirement,
+            "current": current,
+            "risk": level,
+            "action": action,
+            "reviewer": "待复核",
+        })
+
+    for key, label in [("project_name", "项目名称"), ("purchaser", "采购人"), ("bid_deadline", "截止时间")]:
+        value = structured.get(key)
+        if value and value not in text:
+            add("文件版本与范围确认", "中", "待确认", f"标书应包含并统一{label}：{value}", "正文未完整命中该字段", "在封面、投标函、项目理解和商务响应中统一该字段。")
+
+    for line in sections.get("rejection", [])[:8]:
+        if not any(word in text for word in important_words(line)[:3]):
+            add("废标与资格条件优先", "高", "确定问题", line, "未在正文中找到足够明确的响应", "增加废标项规避说明，并在附件清单中确认材料存在。")
+
+    for line in sections.get("qualification", [])[:10]:
+        if not any(word in text for word in important_words(line)[:3]):
+            add("废标与资格条件优先", "高", "待确认", line, "资格响应可能不充分", "补充资格证明材料，并在资格章节逐条说明。")
+
+    placeholders = ["____", "……", "XXXX", "示例", "待填写", "【】", "（ ）", "( )", "错误！未定义书签"]
+    for token in placeholders:
+        if token in text:
+            add("重复内容与模板残留检查", "高" if "错误" in token else "中", "确定问题", f"不得残留占位符或错误文本：{token}", f"正文出现：{token}", "定位后替换为真实内容或删除。")
+
+    if "报价" in text or sections.get("price"):
+        has_limit = bool(structured.get("budget") or sections.get("price"))
+        if has_limit and not any(word in text for word in ["大写", "小写", "总价", "单价", "分项报价"]):
+            add("报价闭环检查", "高", "待确认", "报价总价、分项、大小写和限价需闭环一致", "正文报价闭环要素不足", "补齐开标一览表、分项报价表和金额一致性检查。")
+
+    if any("授权" in c.get("title", "") or "授权" in c.get("content", "") for c in chapters):
+        if not all(word in text for word in ["法定代表人", "授权委托", "身份证"]):
+            add("授权与签章依赖检查", "高", "待确认", "授权链条需包含法人、代理人身份证明、签字盖章", "授权相关材料链条不完整", "补齐授权书、身份证明和签章检查。")
+
+    if not re.search(r"(第\s*\d+\s*页|页码|目录)", text):
+        add("全文结构与编号检查", "中", "仅建议优化", "目录、页码、书签、正文顺序应可复核", "正文未体现页码/目录更新状态", "导出 Word 后更新目录和页码并人工复核。")
+
+    missing_materials = [item for item in material_items if item.get("risk") == "高"]
+    for item in missing_materials[:8]:
+        add("逐页逐表非空检查", item.get("risk", "中"), "待确认", item.get("name", "材料项"), "系统无法确认材料是否非空、有效、已盖章", item.get("advice", "人工打开附件逐项核对。"), "材料清单")
+
+    if not issues:
+        add("输出可复核问题单", "低", "仅建议优化", "形成最终问题单并指定复核人", "未发现明显问题", "导出前仍需人工逐页检查签章、报价和附件。")
+
+    return {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "rules": [{"name": name, "description": desc} for name, desc in REVIEW_RULES],
+        "summary": {
+            "total": len(issues),
+            "high": sum(1 for item in issues if item["level"] == "高"),
+            "medium": sum(1 for item in issues if item["level"] == "中"),
+            "low": sum(1 for item in issues if item["level"] == "低"),
+        },
+        "issues": issues,
+    }
+
+
+def write_review_report(review: Dict[str, Any], out_dir: Path) -> str:
+    lines = ["# 标书审查升级版问题单", "", f"生成时间：{review.get('generated_at', '')}", ""]
+    summary = review.get("summary", {})
+    lines.append(f"总问题：{summary.get('total', 0)}；高风险：{summary.get('high', 0)}；中风险：{summary.get('medium', 0)}；低风险：{summary.get('low', 0)}")
+    lines.extend(["", "## 审查规则", ""])
+    for rule in review.get("rules", []):
+        lines.append(f"- {rule['name']}：{rule['description']}")
+    lines.extend(["", "## 可复核问题单", ""])
+    for i, item in enumerate(review.get("issues", []), 1):
+        lines.extend([
+            f"### {i}. 【{item['level']}】【{item['status']}】{item['rule']}",
+            f"- 页码/位置：{item['location']}",
+            f"- 招标要求：{item['requirement']}",
+            f"- 文件现状：{item['current']}",
+            f"- 风险：{item['risk']}",
+            f"- 修改动作：{item['action']}",
+            f"- 复核人：{item['reviewer']}",
+            "",
+        ])
+    content = "\n".join(lines)
+    (out_dir / "07_升级版审查问题单.md").write_text(content, encoding="utf-8")
+    write_json(out_dir / "07_升级版审查问题单.json", review)
+    return content
 
 
 def write_library_markdown(data: Dict[str, Any]) -> None:

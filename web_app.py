@@ -145,8 +145,10 @@ def library_payload() -> Dict[str, Any]:
     data = read_json_file(library_store_path(), {})
     data.setdefault("company", {})
     data.setdefault("legal", {})
+    data.setdefault("people", [])
     data.setdefault("cases", [])
     data.setdefault("certs", [])
+    data.setdefault("templates", [])
     data["assets"] = library_assets()
     return data
 
@@ -185,6 +187,7 @@ class Handler(BaseHTTPRequestHandler):
                         "report": read_project_text(project, "04_合规检查报告.md"),
                         "source": read_project_text(project, "招标文件全文.txt"),
                         "chapters": read_project_json(project, "05_章节正文.json", []),
+                        "review": read_project_json(project, "07_升级版审查问题单.json", {}),
                     }
                 )
                 return
@@ -213,6 +216,15 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/generate-chapter":
                 self.handle_generate_chapter()
+                return
+            if path == "/api/save-chapter":
+                self.handle_save_chapter()
+                return
+            if path == "/api/run-review":
+                self.handle_run_review()
+                return
+            if path == "/api/export-final":
+                self.handle_export_final()
                 return
             if path != "/api/run":
                 self.send_error(404, "Not found")
@@ -254,9 +266,15 @@ class Handler(BaseHTTPRequestHandler):
         out_dir = safe_inside(agent.DIRS["outputs"] / project)
         analysis_path = out_dir / "01_招标文件解读.json"
         chapters_path = out_dir / "05_章节正文.json"
-        if analysis_path.exists() and not chapters_path.exists():
+        if analysis_path.exists():
             analysis = read_json_file(analysis_path, {})
-            if analysis:
+            if analysis and ("material_items" not in analysis or "timeline_items" not in analysis):
+                sections = analysis.get("sections", {})
+                structured = analysis.get("structured", {})
+                analysis["material_items"] = agent.build_material_items(sections, structured)
+                analysis["timeline_items"] = agent.build_timeline_items(structured, sections)
+                write_json_file(analysis_path, analysis)
+            if analysis and not chapters_path.exists():
                 agent.generate_chapters(analysis, out_dir)
 
     def handle_library_save(self) -> None:
@@ -265,7 +283,7 @@ class Handler(BaseHTTPRequestHandler):
         current = read_json_file(library_store_path(), {})
         section = data.get("section") or "company"
         payload = data.get("data") or {}
-        if section not in {"company", "legal", "cases", "certs"}:
+        if section not in {"company", "legal", "people", "cases", "certs", "templates"}:
             self.send_error_json(400, "不支持的资料库分区")
             return
         current[section] = payload
@@ -307,6 +325,52 @@ class Handler(BaseHTTPRequestHandler):
         analysis = read_json_file(out_dir / "01_招标文件解读.json", {})
         chapters = agent.generate_chapters(analysis, out_dir, only_id=chapter_id or None)
         self.send_json({"project": project, "chapters": chapters})
+
+    def handle_save_chapter(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        project = data.get("project") or ""
+        chapter_id = data.get("chapter_id") or ""
+        content = data.get("content") or ""
+        if not project:
+            self.send_error_json(400, "缺少项目名称")
+            return
+        out_dir = safe_inside(agent.DIRS["outputs"] / project)
+        chapters = read_json_file(out_dir / "05_章节正文.json", [])
+        for chapter in chapters:
+            if chapter.get("id") == chapter_id:
+                chapter["content"] = content
+                break
+        else:
+            self.send_error_json(404, "未找到章节")
+            return
+        agent.save_chapters(out_dir, chapters)
+        self.send_json({"project": project, "chapters": chapters})
+
+    def handle_run_review(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        project = data.get("project") or ""
+        if not project:
+            self.send_error_json(400, "缺少项目名称")
+            return
+        out_dir = safe_inside(agent.DIRS["outputs"] / project)
+        analysis = read_json_file(out_dir / "01_招标文件解读.json", {})
+        chapters = read_json_file(out_dir / "05_章节正文.json", [])
+        review = agent.upgraded_review(analysis, chapters, read_json_file(library_store_path(), {}))
+        agent.write_review_report(review, out_dir)
+        self.send_json({"project": project, "review": review})
+
+    def handle_export_final(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        project = data.get("project") or ""
+        if not project:
+            self.send_error_json(400, "缺少项目名称")
+            return
+        out_dir = safe_inside(agent.DIRS["outputs"] / project)
+        docx = agent.export_chapters_docx(out_dir, agent.find_template())
+        self.send_json({"project": project, "docx": str(docx.relative_to(ROOT))})
 
     def parse_multipart(self, length: int) -> Dict[str, List[Any]]:
         content_type = self.headers.get("Content-Type", "")

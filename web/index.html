@@ -87,6 +87,7 @@
             </div>
             <aside class="analysis-pane">
               <div class="pane-title"><h2>读透招标文件</h2><button class="icon-btn">⛶</button></div>
+              <div id="analysisSummary" class="analysis-summary-grid"></div>
               <div class="analysis-tabs" id="analysisTabs"></div>
               <div id="analysisContent" class="analysis-content"></div>
             </aside>
@@ -125,23 +126,28 @@
             <div class="step"><i></i><span>产出可投标书</span></div>
           </div>
           <div class="outline-toolbar">
-            <h2>标书目录</h2>
+            <h2>章节编辑</h2>
             <label class="switch-label"><input type="checkbox" /> <span></span>只看技术标</label>
             <button id="openLengthModal" class="tool-btn">🔧 立即生成标书正文</button>
             <button id="regenOutlineBtn" class="tool-btn">↻ 重新生成目录</button>
+            <button id="saveChapterBtn" class="tool-btn">保存本章</button>
             <button id="downloadBidBtn" class="tool-btn disabled">⬇ 立即下载完整标书</button>
           </div>
           <div class="outline-split">
             <aside id="outlineList" class="outline-list"></aside>
             <section class="body-preview">
-              <header><strong>正文内容预览</strong><div class="zoom"><span>⌕</span><input type="range" min="70" max="130" value="100" /><span>⌕</span><b>100%</b></div></header>
-              <div id="bodyPreviewText" class="empty-body"><button id="centerGenerateBtn" class="tool-btn">🔧 立即生成标书正文</button></div>
+              <header><strong id="chapterEditorTitle">正文内容编辑</strong><div class="zoom"><span>⌕</span><input type="range" min="70" max="130" value="100" /><span>⌕</span><b>100%</b></div></header>
+              <div class="chapter-editor-layout">
+                <textarea id="chapterEditor" class="chapter-editor" placeholder="选择左侧章节后编辑正文。"></textarea>
+                <aside id="chapterRefs" class="chapter-refs"></aside>
+              </div>
             </section>
           </div>
         </section>
 
         <section id="check" class="view check-view">
           <div class="crumbs"><span>工作台</span><span>›</span><span class="strong">标书合规检查</span></div>
+          <div class="check-workspace">
           <div class="check-form">
             <h2>招标文件（DOC / DOCX）</h2>
             <div class="selected-doc"><span>▤</span><strong id="checkTenderName">（定稿）昆明市中医医院2026年门诊导医服务、消毒供应...</strong><em>未解读</em><button>重新上传</button></div>
@@ -164,36 +170,45 @@
             <p class="indent-note">关闭时仅做格式与规则检查；开启时额外对照招标文件，检查响应是否到位、表述是否一致（AI 辅助，结论需人工确认）。</p>
             <button id="startCheckBtn" class="wide-gold">开始合规检查</button>
           </div>
+          <aside class="review-panel">
+            <div class="review-head">
+              <h2>导出前审查</h2>
+              <button id="runReviewBtn" class="gold-btn" type="button">运行升级版审查</button>
+              <button id="exportFinalBtn" class="white-btn" type="button">导出 Word</button>
+            </div>
+            <div id="reviewSummary" class="review-summary"></div>
+            <div id="reviewIssues" class="review-issues"></div>
+          </aside>
+          </div>
         </section>
 
         <section id="library" class="view library-view">
-          <div class="library-tabs">
-            <button class="active">企业信息</button>
-            <button>法人信息</button>
-            <button>企业资质 <em>0</em></button>
-            <button>企业业绩 <em>0</em></button>
-            <button>历史标书库 <em class="tag">核心素材</em></button>
-            <button>标书模版</button>
+          <div class="library-tabs" id="libraryTabs">
+            <button class="active" type="button" data-library-tab="company">企业信息</button>
+            <button type="button" data-library-tab="legal">法人信息</button>
+            <button type="button" data-library-tab="people">人员库</button>
+            <button type="button" data-library-tab="certs">企业资质 <em>0</em></button>
+            <button type="button" data-library-tab="cases">企业业绩 <em>0</em></button>
+            <button type="button" data-library-tab="templates">标书模版</button>
           </div>
           <div class="library-actions"><button class="white-btn" type="button">⬇ 下载模板</button><button class="white-btn" type="button">⇧ 导入 Excel</button><span id="libraryStatus">请填写企业信息</span></div>
           <form id="libraryForm" class="library-form">
             <div class="form-left">
-              <h2>企业信息</h2>
-              <input name="company_name" placeholder="公司名称 *" />
-              <div class="two-col"><input name="company_type" placeholder="企业类型" /><input name="business_period" placeholder="营业期限" /></div>
-              <div class="two-col"><input name="credit_code" placeholder="统一社会信用代码" /><input name="established_at" placeholder="成立时间" type="text" onfocus="this.type='date'" /></div>
+              <h2 id="libraryFormTitle">企业信息</h2>
+              <div id="libraryFields" class="library-fields"></div>
               <button class="accordion" type="button">更多信息 <span>⌄</span></button>
               <section class="subform">
                 <h3>保险行业专属信息 <span>⌃</span></h3>
-                <input name="insurance_license" placeholder="保险许可证号" />
-                <textarea name="insurance_scope" placeholder="保险许可证业务范围"></textarea>
-                <div class="two-col"><input name="regulatory_rating" placeholder="监管评级" /><input name="solvency_rate" placeholder="偿付能力充足率（%）" /></div>
-                <div class="two-col"><input name="branch_count" placeholder="分支机构数量" /><input name="premium_income" placeholder="保费收入（亿元）" /></div>
-                <input name="claim_close_rate" placeholder="理赔结案率（%）" />
+                <input name="insurance_license" data-section="company" placeholder="保险许可证号" />
+                <textarea name="insurance_scope" data-section="company" placeholder="保险许可证业务范围"></textarea>
+                <div class="two-col"><input name="regulatory_rating" data-section="company" placeholder="监管评级" /><input name="solvency_rate" data-section="company" placeholder="偿付能力充足率（%）" /></div>
+                <div class="two-col"><input name="branch_count" data-section="company" placeholder="分支机构数量" /><input name="premium_income" data-section="company" placeholder="保费收入（亿元）" /></div>
+                <input name="claim_close_rate" data-section="company" placeholder="理赔结案率（%）" />
               </section>
               <div class="bottom-actions"><button class="gold-btn" type="submit">保存</button><button class="white-btn" type="button" id="resetLibraryBtn">取消</button></div>
             </div>
             <div class="form-right">
+              <div id="libraryAssetList" class="asset-list"></div>
               <h3>营业执照</h3>
               <label class="dropbox" for="businessLicenseUpload"><span>▧</span><strong>将文件拖拽到此处，或<br />点击上传</strong><small id="businessLicenseName">必须为清晰、完整的彩色原件扫描件、数码照，或者电子营业执照<br />仅支持 PNG、JPG、BMP、PDF，最大 10MB</small></label>
               <input id="businessLicenseUpload" type="file" hidden accept=".png,.jpg,.jpeg,.bmp,.pdf" data-upload-category="licenses" multiple />
