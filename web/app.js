@@ -25,6 +25,7 @@ let currentProjectData = null;
 let currentAnalysisTab = "insight";
 let libraryData = {};
 let selectedChapterId = "";
+let pendingMakeProject = null;
 
 const demoProject = {
   name: "云南省第一人民医院辅助类服务项目咨询公告 - 云南省第一人民医院.pdf",
@@ -61,7 +62,7 @@ document.getElementById("hideAnalysisBtn").addEventListener("click", () => {
 document.getElementById("openLengthModal").addEventListener("click", openLengthModal);
 document.getElementById("centerGenerateBtn").addEventListener("click", openLengthModal);
 document.getElementById("regenOutlineBtn").addEventListener("click", openLengthModal);
-document.getElementById("cancelLength").addEventListener("click", () => lengthModal.classList.add("hidden"));
+document.getElementById("cancelLength").addEventListener("click", closeLengthModal);
 document.getElementById("confirmLength").addEventListener("click", generateBidBody);
 document.getElementById("startCheckBtn").addEventListener("click", () => {
   showView("read-detail");
@@ -75,6 +76,13 @@ document.querySelectorAll(".length-grid button").forEach((button) => {
     button.classList.add("selected");
     customPages.value = button.dataset.pages;
     updateEstimate();
+  });
+});
+
+document.querySelectorAll(".numbering button").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll(".numbering button").forEach((x) => x.classList.remove("selected"));
+    button.classList.add("selected");
   });
 });
 
@@ -192,9 +200,9 @@ function renderCards() {
     button.addEventListener("click", async () => {
       const project = projects.find((item) => item.name === button.dataset.makeProject) || currentProject;
       currentProject = project;
+      pendingMakeProject = project;
       await loadProjectData(project);
-      renderOutline();
-      showRawView("outline");
+      openLengthModal({ mode: "beforeMake" });
     });
   });
 }
@@ -348,9 +356,20 @@ function renderOutline() {
     : "";
 }
 
-function openLengthModal() {
+function openLengthModal(options = {}) {
+  if (options.mode === "beforeMake") {
+    lengthModal.dataset.mode = "beforeMake";
+  } else {
+    lengthModal.dataset.mode = "generateBody";
+  }
   updateEstimate();
   lengthModal.classList.remove("hidden");
+}
+
+function closeLengthModal() {
+  lengthModal.classList.add("hidden");
+  lengthModal.dataset.mode = "";
+  pendingMakeProject = null;
 }
 
 function updateEstimate() {
@@ -360,7 +379,16 @@ function updateEstimate() {
 
 function generateBidBody() {
   lengthModal.classList.add("hidden");
-  renderSelectedChapter();
+  if (lengthModal.dataset.mode === "beforeMake") {
+    if (pendingMakeProject) currentProject = pendingMakeProject;
+    selectedChapterId = "";
+    renderOutline();
+    showRawView("outline");
+    pendingMakeProject = null;
+  } else {
+    renderSelectedChapter();
+  }
+  lengthModal.dataset.mode = "";
   document.getElementById("downloadBidBtn").classList.remove("disabled");
 }
 
