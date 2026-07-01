@@ -120,6 +120,9 @@ def library_store_path() -> Path:
 def library_assets() -> Dict[str, List[Dict[str, Any]]]:
     groups = {
         "licenses": agent.DIRS["company"] / "证照附件",
+        "company": agent.DIRS["company"] / "企业附件",
+        "legal": agent.DIRS["company"] / "法人附件",
+        "people": agent.DIRS["company"] / "人员附件",
         "certs": agent.DIRS["certs"],
         "cases": agent.DIRS["cases"],
         "history": agent.DIRS["history"],
@@ -289,7 +292,17 @@ class Handler(BaseHTTPRequestHandler):
         if section not in {"company", "legal", "people", "cases", "certs", "templates"}:
             self.send_error_json(400, "不支持的资料库分区")
             return
-        current[section] = payload
+        if section in {"people", "cases", "certs", "templates"}:
+            existing = current.get(section, [])
+            if not isinstance(existing, list):
+                existing = [existing] if existing else []
+            incoming = payload if isinstance(payload, list) else [payload]
+            for item in incoming:
+                if isinstance(item, dict) and any(str(value).strip() for value in item.values()):
+                    existing.append(item)
+            current[section] = existing
+        else:
+            current[section] = payload
         write_json_file(library_store_path(), current)
         agent.write_library_markdown(current)
         self.send_json({"library": library_payload()})
@@ -303,6 +316,9 @@ class Handler(BaseHTTPRequestHandler):
         category = self.first_text(form, "category") or "licenses"
         destinations = {
             "licenses": agent.DIRS["company"] / "证照附件",
+            "company": agent.DIRS["company"] / "企业附件",
+            "legal": agent.DIRS["company"] / "法人附件",
+            "people": agent.DIRS["company"] / "人员附件",
             "certs": agent.DIRS["certs"],
             "cases": agent.DIRS["cases"],
             "history": agent.DIRS["history"],

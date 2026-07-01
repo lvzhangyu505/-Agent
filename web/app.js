@@ -25,6 +25,7 @@ const libraryTabs = document.getElementById("libraryTabs");
 const libraryFields = document.getElementById("libraryFields");
 const libraryFormTitle = document.getElementById("libraryFormTitle");
 const libraryAssetList = document.getElementById("libraryAssetList");
+const libraryGeneralUpload = document.getElementById("libraryGeneralUpload");
 const checkTenderInput = document.getElementById("checkTenderInput");
 const checkBidInput = document.getElementById("checkBidInput");
 const checkBidList = document.getElementById("checkBidList");
@@ -122,6 +123,7 @@ libraryTabs.querySelectorAll("[data-library-tab]").forEach((button) => {
 document.querySelectorAll("[data-upload-category]").forEach((input) => {
   input.addEventListener("change", () => uploadLibraryFiles(input));
 });
+libraryGeneralUpload.addEventListener("change", () => uploadLibraryFiles(libraryGeneralUpload, activeLibraryTab));
 
 interpretTender.addEventListener("change", () => {
   document.getElementById("interpretFileName").textContent = interpretTender.files[0]?.name || "或拖拽文件到此处";
@@ -738,9 +740,6 @@ function collectLibrarySectionData() {
       values[input.name] = input.value;
     });
   }
-  if (["people", "cases", "certs", "templates"].includes(activeLibraryTab)) {
-    return [values];
-  }
   return values;
 }
 
@@ -763,6 +762,7 @@ function renderLibraryForm() {
   };
   const config = configs[activeLibraryTab] || configs.company;
   libraryFormTitle.textContent = config.title;
+  updateLibraryUploadCopy(config.title);
   const fields = config.fields.map(([name, placeholder]) => {
     return name === "content" || name === "scope" || name === "note" || name === "experience"
       ? `<textarea name="${name}" placeholder="${placeholder}"></textarea>`
@@ -778,11 +778,11 @@ function renderLibraryForm() {
   renderLibraryAssets();
 }
 
-async function uploadLibraryFiles(input) {
+async function uploadLibraryFiles(input, categoryOverride) {
   if (!input.files.length) return;
   libraryStatus.textContent = "正在上传资料附件...";
   const form = new FormData();
-  form.append("category", input.dataset.uploadCategory);
+  form.append("category", categoryOverride || input.dataset.uploadCategory || activeLibraryTab);
   Array.from(input.files).forEach((file) => form.append("files", file));
   const response = await fetch("/api/library/upload", { method: "POST", body: form });
   const result = await response.json();
@@ -807,14 +807,50 @@ function renderLibraryAssets() {
     setText("accountLicenseName", `已保存 ${licenses.length} 个证照附件，点击可继续上传。`);
   }
   const counts = {
+    people: Array.isArray(libraryData.people) ? libraryData.people.length : 0,
     certs: Array.isArray(libraryData.certs) ? libraryData.certs.length : 0,
     cases: Array.isArray(libraryData.cases) ? libraryData.cases.length : 0,
     templates: Array.isArray(libraryData.templates) ? libraryData.templates.length : 0,
   };
   libraryTabs.querySelectorAll("[data-library-tab='certs'] em").forEach((x) => x.textContent = counts.certs);
   libraryTabs.querySelectorAll("[data-library-tab='cases'] em").forEach((x) => x.textContent = counts.cases);
-  const group = assets[activeLibraryTab] || assets.licenses || [];
-  libraryAssetList.innerHTML = `<h3>已保存附件/素材</h3>${group.length ? group.slice(0, 8).map((file) => `<div class="asset-row"><strong>${escapeHtml(file.name)}</strong><small>${Math.ceil((file.size || 0) / 1024)} KB</small></div>`).join("") : "<p>暂无附件，可点击右侧区域上传。</p>"}`;
+  const activeFiles = assets[activeLibraryTab] || [];
+  const group = activeFiles.length ? activeFiles : (activeLibraryTab === "company" ? (assets.licenses || []) : []);
+  const entries = normalizeLibraryEntries(libraryData[activeLibraryTab]);
+  const entryRows = entries.slice(0, 6).map((entry) => {
+    const title = entry.company_name || entry.legal_name || entry.name || entry.project_name || entry.template_name || entry.client || "未命名资料";
+    const meta = entry.role || entry.certificate || entry.number || entry.client || entry.type || entry.credit_code || "";
+    return `<div class="asset-row"><strong>${escapeHtml(title)}</strong><small>${escapeHtml(meta || "已保存文字资料")}</small></div>`;
+  }).join("");
+  const fileRows = group.slice(0, 8).map((file) => `<div class="asset-row"><strong>${escapeHtml(file.name)}</strong><small>${Math.ceil((file.size || 0) / 1024)} KB</small></div>`).join("");
+  libraryAssetList.innerHTML = `
+    <h3>已保存资料</h3>
+    ${entryRows || "<p>暂无文字资料，填写左侧表单后点击保存。</p>"}
+    <h3>已保存附件/素材</h3>
+    ${fileRows || "<p>暂无附件，可点击下方上传。</p>"}
+  `;
+}
+
+function updateLibraryUploadCopy(title) {
+  const uploadTitle = document.getElementById("libraryUploadTitle");
+  const uploadHint = document.getElementById("libraryUploadHint");
+  const hints = {
+    company: ["上传企业附件", "营业执照、开户许可、公司介绍、制度文件等资料。"],
+    legal: ["上传法人附件", "法人身份证明、授权材料、签字样本等资料。"],
+    people: ["上传人员附件", "人员简历、证书、社保或岗位证明等资料。"],
+    certs: ["上传资质证书", "资质证书、许可证、认证证书、扫描件或 PDF。"],
+    cases: ["上传业绩材料", "合同、验收证明、中标通知书、服务评价等材料。"],
+    templates: ["上传 Word 模板", "标书封面、目录、正文格式、商务/技术标模板。"],
+  };
+  const [label, hint] = hints[activeLibraryTab] || [`上传${title}附件`, "将本类资料附件上传到本地资料库。"];
+  uploadTitle.textContent = label;
+  uploadHint.textContent = hint;
+}
+
+function normalizeLibraryEntries(value) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object" && Object.keys(value).length) return [value];
+  return [];
 }
 
 function getSourceText() {

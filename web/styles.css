@@ -782,6 +782,10 @@ button:disabled {
   align-content: center;
   gap: 18px;
 }
+.compact-dropbox {
+  height: 150px;
+  border-style: solid;
+}
 .dropbox span {
   width: 64px;
   height: 64px;
@@ -790,6 +794,11 @@ button:disabled {
   background: #eef8ff;
   color: var(--gold);
   font-size: 34px;
+}
+.dropbox.compact-dropbox span {
+  width: 48px;
+  height: 48px;
+  font-size: 24px;
 }
 .dropbox strong { font-weight: 500; line-height: 1.9; }
 .dropbox small { line-height: 2; }
@@ -898,6 +907,14 @@ button:disabled {
   background: #fff;
   border-radius: 16px;
   padding: 14px;
+}
+.asset-list h3 {
+  margin: 4px 0 8px;
+}
+.asset-list h3:not(:first-child) {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
 }
 .asset-row {
   display: flex;

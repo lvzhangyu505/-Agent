@@ -216,6 +216,8 @@
             </div>
             <div class="form-right">
               <div id="libraryAssetList" class="asset-list"></div>
+              <label class="dropbox compact-dropbox" for="libraryGeneralUpload"><span>⇧</span><strong id="libraryUploadTitle">上传本类附件</strong><small id="libraryUploadHint">人员简历、资质证书、业绩合同、历史标书或 Word 模板都可以在这里补充。</small></label>
+              <input id="libraryGeneralUpload" type="file" hidden accept=".doc,.docx,.pdf,.txt,.md,.xls,.xlsx,.png,.jpg,.jpeg,.bmp" multiple />
               <h3>营业执照</h3>
               <label class="dropbox" for="businessLicenseUpload"><span>▧</span><strong>将文件拖拽到此处，或<br />点击上传</strong><small id="businessLicenseName">必须为清晰、完整的彩色原件扫描件、数码照，或者电子营业执照<br />仅支持 PNG、JPG、BMP、PDF，最大 10MB</small></label>
               <input id="businessLicenseUpload" type="file" hidden accept=".png,.jpg,.jpeg,.bmp,.pdf" data-upload-category="licenses" multiple />
