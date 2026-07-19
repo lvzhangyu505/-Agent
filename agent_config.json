@@ -1,4 +1,9 @@
 {
   "template_bookmark": "ZL_INSERT_FULL_BID_BODY",
-  "technical_bid_first": true
+  "technical_bid_first": true,
+  "api_base": "",
+  "model": "",
+  "max_tokens": 4096,
+  "provider": "local",
+  "temperature": 0.3
 }

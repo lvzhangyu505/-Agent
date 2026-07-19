@@ -31,6 +31,10 @@ const checkBidInput = document.getElementById("checkBidInput");
 const checkBidList = document.getElementById("checkBidList");
 const checkTenderStatus = document.getElementById("checkTenderStatus");
 const checkTenderHint = document.getElementById("checkTenderHint");
+const settingsForm = document.getElementById("settingsForm");
+const taskProgressPanel = document.getElementById("taskProgressPanel");
+const outlineTaskStatus = document.getElementById("outlineTaskStatus");
+const knowledgeIndexStatus = document.getElementById("knowledgeIndexStatus");
 
 let projects = [];
 let currentProject = null;
@@ -93,6 +97,8 @@ document.getElementById("runReviewBtn").addEventListener("click", runUpgradedRev
 document.getElementById("exportFinalBtn").addEventListener("click", exportFinalDocx);
 checkTenderInput.addEventListener("change", handleCheckTenderUpload);
 checkBidInput.addEventListener("change", handleCheckBidUpload);
+settingsForm.addEventListener("submit", saveSettings);
+document.getElementById("rebuildIndexBtn").addEventListener("click", rebuildKnowledgeIndex);
 
 document.querySelectorAll(".length-grid button").forEach((button) => {
   button.addEventListener("click", () => {
@@ -136,7 +142,7 @@ makeTender.addEventListener("change", () => {
 });
 
 function showView(id) {
-  const aliases = { interpret: "interpret", make: "make", check: "check", library: "library", history: "history", templates: "templates", outputs: "outputs" };
+  const aliases = { interpret: "interpret", make: "make", check: "check", library: "library", history: "history", templates: "templates", outputs: "outputs", settings: "settings" };
   const viewId = aliases[id] || id;
   views.forEach((view) => view.classList.toggle("active-view", view.id === viewId));
   railItems.forEach((item) => item.classList.toggle("active", item.dataset.view === id || item.dataset.view === viewId));
@@ -187,6 +193,33 @@ async function loadLibrary() {
   }
 }
 
+async function loadSettings() {
+  try {
+    const response = await fetch("/api/settings");
+    const data = await response.json();
+    const settings = data.settings || {};
+    Object.entries(settings).forEach(([name, value]) => {
+      const input = settingsForm.elements[name];
+      if (!input) return;
+      if (input.type === "checkbox") input.checked = Boolean(value);
+      else input.value = value ?? "";
+    });
+    document.getElementById("settingsStatus").textContent = settings.has_api_key ? "API Key 已保存" : "当前使用本地规则";
+  } catch (error) {
+    document.getElementById("settingsStatus").textContent = `读取失败：${error.message}`;
+  }
+}
+
+async function loadKnowledgeIndex() {
+  try {
+    const response = await fetch("/api/knowledge-index");
+    const data = await response.json();
+    renderKnowledgeIndex(data.index || {});
+  } catch (error) {
+    knowledgeIndexStatus.textContent = `索引读取失败：${error.message}`;
+  }
+}
+
 async function loadProjectData(project) {
   if (!project || project.demo) {
     currentProjectData = demoData();
@@ -203,6 +236,7 @@ function renderAll() {
   renderOutline();
   renderReview();
   renderOutputs();
+  renderTaskProgress();
 }
 
 function renderStats() {
@@ -246,7 +280,8 @@ function fileCard(project, mode) {
   const actions = mode === "make"
     ? `<button class="white-btn" data-open-project="${escapeHtml(project.name)}">查看解读</button><button class="gold-btn" data-make-project="${escapeHtml(project.name)}">制作标书 →</button>`
     : `<button class="gold-btn" data-open-project="${escapeHtml(project.name)}">查看解读</button><button class="white-btn">删除</button>`;
-  const extra = mode === "make" ? '<span class="status-wait">待生成目录</span><span class="status-wait">无标书</span>' : "";
+  const task = project.task || {};
+  const extra = mode === "make" ? `<span class="status-wait">${escapeHtml(task.message || "待生成目录")}</span><span class="status-wait">${Number(task.progress || 0)}%</span>` : "";
   return `
     <article class="file-card">
       <div class="file-head"><span class="pdf-icon">▧</span><span class="tag">PDF PDF 格式文件</span></div>
@@ -569,6 +604,7 @@ function renderSelectedChapter() {
 function renderChapterRefs(chapter) {
   const refs = [
     ...(chapter.requirements || []).slice(0, 8).map((item) => ({ title: "招标要求", text: item })),
+    ...(chapter.knowledge_refs || []).map((item) => ({ title: `${item.category || "知识库"} · ${item.path || ""}`, text: item.excerpt || "" })),
     ...(safeFullAnalysis().material_items || []).slice(0, 5).map((item) => ({ title: item.category || "材料", text: `${item.name}：${item.advice}` })),
   ];
   return `
@@ -592,7 +628,9 @@ async function regenerateSelectedChapter() {
     return;
   }
   currentProjectData.chapters = data.chapters || [];
+  currentProjectData.task = data.task || currentProjectData.task;
   renderOutline();
+  renderTaskProgress();
 }
 
 async function saveSelectedChapter() {
@@ -640,7 +678,9 @@ async function runUpgradedReview() {
     return;
   }
   currentProjectData.review = data.review;
+  currentProjectData.task = data.task || currentProjectData.task;
   renderReview();
+  renderTaskProgress();
 }
 
 function renderReview() {
@@ -663,6 +703,7 @@ function renderReview() {
         <p><b>复核人：</b>${escapeHtml(item.reviewer)}</p>
       </article>`).join("")
     : `<div class="warn-box">尚未运行升级版审查。</div>`;
+  renderFormatCheck(currentProjectData?.format_check || {});
 }
 
 async function exportFinalDocx() {
@@ -677,7 +718,74 @@ async function exportFinalDocx() {
     document.getElementById("reviewIssues").innerHTML = `<div class="warn-box">${escapeHtml(data.message || "导出失败")}</div>`;
     return;
   }
+  currentProjectData.format_check = data.format_check || {};
+  currentProjectData.task = data.task || currentProjectData.task;
+  renderReview();
+  renderTaskProgress();
   window.location.href = `/download?path=${encodeURIComponent(data.docx)}`;
+}
+
+function renderTaskProgress() {
+  const task = currentProjectData?.task || currentProject?.task || {};
+  const progress = Math.max(0, Math.min(100, Number(task.progress || 0)));
+  const message = task.message || "尚无运行中的任务。上传招标文件后会记录每一步，可在下次打开时继续。";
+  taskProgressPanel.innerHTML = `
+    <div><strong>任务进度 / 恢复</strong><span>${escapeHtml(task.status === "completed" ? "已完成" : task.status === "running" ? "进行中" : "待开始")}</span></div>
+    <p>${escapeHtml(message)}</p>
+    <div class="task-track"><i style="width:${progress}%"></i></div>
+    <small>${progress}% · ${escapeHtml(task.updated_at || "尚未运行")}</small>
+  `;
+  outlineTaskStatus.textContent = task.message ? `${progress}% ${task.message}` : "";
+}
+
+function renderFormatCheck(report) {
+  const panel = document.getElementById("formatCheckPanel");
+  const issues = report.issues || [];
+  if (!report.generated_at) {
+    panel.innerHTML = `<div class="warn-box">导出 Word 后将自动检查文件可打开性、标题样式、目录与模板残留。</div>`;
+    return;
+  }
+  panel.innerHTML = `
+    <div class="format-head"><strong>导出格式检查</strong><span class="${report.passed ? "status-ok" : "risk-high"}">${report.passed ? "通过关键检查" : "需要处理"}</span></div>
+    ${issues.length ? issues.map((item) => `<p><b>${escapeHtml(item.level)}：</b>${escapeHtml(item.item)}；${escapeHtml(item.action)}</p>`).join("") : "<p>未发现高风险导出格式问题，仍需人工检查目录更新、页眉页脚、分页和签章。</p>"}
+  `;
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const status = document.getElementById("settingsStatus");
+  status.textContent = "正在保存...";
+  const payload = Object.fromEntries(new FormData(settingsForm).entries());
+  payload.technical_bid_first = settingsForm.elements.technical_bid_first.checked;
+  payload.temperature = Number(payload.temperature);
+  payload.max_tokens = Number(payload.max_tokens);
+  const response = await fetch("/api/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json();
+  if (!response.ok || data.status === "error") {
+    status.textContent = data.message || "保存失败";
+    return;
+  }
+  status.textContent = "模型设置已保存。";
+  if (data.settings?.api_key) settingsForm.elements.api_key.value = data.settings.api_key;
+}
+
+async function rebuildKnowledgeIndex() {
+  knowledgeIndexStatus.textContent = "正在解析资料并重建索引...";
+  const response = await fetch("/api/knowledge-index", { method: "POST" });
+  const data = await response.json();
+  if (!response.ok || data.status === "error") {
+    knowledgeIndexStatus.textContent = data.message || "重建失败";
+    return;
+  }
+  renderKnowledgeIndex(data.index || {});
+}
+
+function renderKnowledgeIndex(index) {
+  knowledgeIndexStatus.textContent = `已索引 ${index.document_count || 0} 份文档 / ${index.chunk_count || 0} 个分段${index.failures?.length ? `，${index.failures.length} 份读取失败` : ""}`;
 }
 
 function safeAnalysis() {
@@ -902,3 +1010,5 @@ function escapeHtml(value) {
 
 loadProjects();
 loadLibrary();
+loadSettings();
+loadKnowledgeIndex();

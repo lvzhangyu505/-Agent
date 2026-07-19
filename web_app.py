@@ -10,6 +10,7 @@ import mimetypes
 import traceback
 import urllib.parse
 from dataclasses import dataclass
+from datetime import datetime
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -82,6 +83,7 @@ def list_projects() -> List[Dict[str, Any]]:
                 ],
                 "has_docx": "完整标书.docx" in files,
                 "has_report": "04_合规检查报告.md" in files,
+                "task": read_json_file(project_dir / "任务状态.json", {}),
             }
         )
     return projects
@@ -115,6 +117,37 @@ def write_json_file(path: Path, data: Any) -> None:
 
 def library_store_path() -> Path:
     return agent.DIRS["company"] / "资料库.json"
+
+
+def config_path() -> Path:
+    return ROOT / "agent_config.json"
+
+
+def secrets_path() -> Path:
+    return ROOT / ".agent_secrets.json"
+
+
+def public_settings() -> Dict[str, Any]:
+    settings = read_json_file(config_path(), {})
+    key = read_json_file(secrets_path(), {}).get("api_key", "")
+    settings["api_key"] = ("*" * 8 + key[-4:]) if key else ""
+    settings["has_api_key"] = bool(key)
+    return settings
+
+
+def task_path(project: str) -> Path:
+    return safe_inside(agent.DIRS["outputs"] / project / "任务状态.json")
+
+
+def update_task(project: str, phase: str, progress: int, message: str, status: str = "running") -> Dict[str, Any]:
+    state = read_json_file(task_path(project), {})
+    now = datetime.now().isoformat(timespec="seconds")
+    state.update({"project": project, "status": status, "phase": phase, "progress": progress, "message": message, "updated_at": now})
+    history = state.setdefault("history", [])
+    history.append({"phase": phase, "progress": progress, "message": message, "at": now})
+    state["history"] = history[-30:]
+    write_json_file(task_path(project), state)
+    return state
 
 
 def library_assets() -> Dict[str, List[Dict[str, Any]]]:
@@ -191,11 +224,19 @@ class Handler(BaseHTTPRequestHandler):
                         "source": read_project_text(project, "招标文件全文.txt"),
                         "chapters": read_project_json(project, "05_章节正文.json", []),
                         "review": read_project_json(project, "07_升级版审查问题单.json", {}),
+                        "format_check": read_project_json(project, "08_导出格式检查.json", {}),
+                        "task": read_project_json(project, "任务状态.json", {}),
                     }
                 )
                 return
             if path == "/api/library":
                 self.send_json({"library": library_payload()})
+                return
+            if path == "/api/settings":
+                self.send_json({"settings": public_settings()})
+                return
+            if path == "/api/knowledge-index":
+                self.send_json({"index": agent.load_knowledge_index()})
                 return
             if path == "/download":
                 query = urllib.parse.parse_qs(parsed.query)
@@ -216,6 +257,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/library/upload":
                 self.handle_library_upload()
+                return
+            if path == "/api/settings":
+                self.handle_settings_save()
+                return
+            if path == "/api/knowledge-index":
+                self.handle_knowledge_rebuild()
                 return
             if path == "/api/check-bids":
                 self.handle_check_bids()
@@ -251,11 +298,20 @@ class Handler(BaseHTTPRequestHandler):
             self.save_optional_uploads(form, "templates", agent.DIRS["templates"])
 
             analysis, out_dir = agent.analyze_tender(tender)
+            project = out_dir.name
+            update_task(project, "analyze", 20, "招标文件结构化解读完成")
+            agent.build_knowledge_index()
+            update_task(project, "index", 35, "知识库分段索引完成")
             agent.make_outline(analysis, out_dir)
+            update_task(project, "outline", 50, "投标目录生成完成")
             agent.draft_bid(analysis, out_dir)
             agent.generate_chapters(analysis, out_dir)
+            update_task(project, "chapters", 75, "章节检索与生成完成")
             agent.compliance_check(analysis, out_dir / "03_标书初稿.md", out_dir)
-            docx = agent.export_docx(out_dir / "03_标书初稿.md", out_dir / "完整标书.docx", agent.find_template())
+            update_task(project, "review", 88, "基础合规检查完成")
+            docx = agent.export_chapters_docx(out_dir, agent.find_template())
+            agent.export_format_check(out_dir, docx)
+            update_task(project, "complete", 100, "标书已生成，可继续编辑或导出", "completed")
             self.send_json(
                 {
                     "project": out_dir.name,
@@ -305,7 +361,8 @@ class Handler(BaseHTTPRequestHandler):
             current[section] = payload
         write_json_file(library_store_path(), current)
         agent.write_library_markdown(current)
-        self.send_json({"library": library_payload()})
+        index = agent.build_knowledge_index()
+        self.send_json({"library": library_payload(), "index": index})
 
     def handle_library_upload(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -333,7 +390,27 @@ class Handler(BaseHTTPRequestHandler):
             path = save_upload(field, dest)
             if path:
                 saved.append(str(path.relative_to(ROOT)))
-        self.send_json({"saved": saved, "library": library_payload()})
+        index = agent.build_knowledge_index()
+        self.send_json({"saved": saved, "library": library_payload(), "index": index})
+
+    def handle_settings_save(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        current = read_json_file(config_path(), {})
+        allowed = {"provider", "model", "api_base", "temperature", "max_tokens", "technical_bid_first"}
+        for key in allowed:
+            if key not in data:
+                continue
+            current[key] = data[key]
+        current.setdefault("template_bookmark", agent.DEFAULT_TEMPLATE_BOOKMARK)
+        write_json_file(config_path(), current)
+        api_key = str(data.get("api_key", ""))
+        if api_key and not api_key.startswith("********"):
+            write_json_file(secrets_path(), {"api_key": api_key})
+        self.send_json({"settings": public_settings()})
+
+    def handle_knowledge_rebuild(self) -> None:
+        self.send_json({"index": agent.build_knowledge_index()})
 
     def handle_check_bids(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -365,8 +442,10 @@ class Handler(BaseHTTPRequestHandler):
         chapter_id = data.get("chapter_id") or ""
         out_dir = safe_inside(agent.DIRS["outputs"] / project)
         analysis = read_json_file(out_dir / "01_招标文件解读.json", {})
+        update_task(project, "chapter-retrieval", 55, f"正在为章节 {chapter_id or '全部'} 检索知识库")
         chapters = agent.generate_chapters(analysis, out_dir, only_id=chapter_id or None)
-        self.send_json({"project": project, "chapters": chapters})
+        task = update_task(project, "chapter-ready", 80, f"章节 {chapter_id or '全部'} 已生成，等待人工确认")
+        self.send_json({"project": project, "chapters": chapters, "task": task})
 
     def handle_save_chapter(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -401,7 +480,8 @@ class Handler(BaseHTTPRequestHandler):
         chapters = read_json_file(out_dir / "05_章节正文.json", [])
         review = agent.upgraded_review(analysis, chapters, read_json_file(library_store_path(), {}))
         agent.write_review_report(review, out_dir)
-        self.send_json({"project": project, "review": review})
+        task = update_task(project, "review-ready", 92, "查重、模板残留和废标专项检查完成")
+        self.send_json({"project": project, "review": review, "task": task})
 
     def handle_export_final(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -412,7 +492,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         out_dir = safe_inside(agent.DIRS["outputs"] / project)
         docx = agent.export_chapters_docx(out_dir, agent.find_template())
-        self.send_json({"project": project, "docx": str(docx.relative_to(ROOT))})
+        format_check = agent.export_format_check(out_dir, docx)
+        task = update_task(project, "complete", 100, "Word 已导出并完成格式检查", "completed")
+        self.send_json({"project": project, "docx": str(docx.relative_to(ROOT)), "format_check": format_check, "task": task})
 
     def parse_multipart(self, length: int) -> Dict[str, List[Any]]:
         content_type = self.headers.get("Content-Type", "")

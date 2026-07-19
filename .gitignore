@@ -8,3 +8,4 @@ __pycache__/
 历史标书/
 模板/
 输出标书/
+.agent_secrets.json

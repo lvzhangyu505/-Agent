@@ -61,6 +61,14 @@ class SourceDoc:
     text: str
 
 
+@dataclass
+class KnowledgeChunk:
+    chunk_id: str
+    path: Path
+    category: str
+    text: str
+
+
 def ensure_dirs() -> None:
     for path in DIRS.values():
         path.mkdir(parents=True, exist_ok=True)
@@ -392,6 +400,83 @@ def load_knowledge() -> List[SourceDoc]:
     return docs
 
 
+def knowledge_index_path() -> Path:
+    return DIRS["company"] / "知识库分段索引.json"
+
+
+def split_knowledge_text(text: str, chunk_size: int = 700, overlap: int = 100) -> List[str]:
+    paragraphs = [part.strip() for part in re.split(r"\n{2,}", text) if part.strip()]
+    chunks: List[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if len(current) + len(paragraph) + 1 <= chunk_size:
+            current = f"{current}\n{paragraph}".strip()
+            continue
+        if current:
+            chunks.append(current)
+        current = (current[-overlap:] + "\n" + paragraph).strip() if current else paragraph
+        while len(current) > chunk_size:
+            chunks.append(current[:chunk_size])
+            current = current[max(1, chunk_size - overlap):]
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def build_knowledge_index() -> Dict[str, Any]:
+    categories = {"company": "企业资料", "certs": "资质证书", "cases": "企业业绩", "history": "历史标书"}
+    records: List[Dict[str, Any]] = []
+    failures: List[Dict[str, str]] = []
+    for key, label in categories.items():
+        for path in sorted(DIRS[key].rglob("*")):
+            if not path.is_file() or path.suffix.lower() not in SUPPORTED:
+                continue
+            try:
+                text = normalize_text(read_text(path))
+                for index, chunk in enumerate(split_knowledge_text(text), 1):
+                    records.append({
+                        "chunk_id": f"{key}:{path.relative_to(DIRS[key])}:{index}",
+                        "path": str(path.relative_to(ROOT)),
+                        "category": label,
+                        "text": chunk,
+                        "keywords": important_words(chunk)[:16],
+                    })
+            except Exception as exc:
+                failures.append({"path": str(path.relative_to(ROOT)), "error": str(exc)})
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "document_count": len({item["path"] for item in records}),
+        "chunk_count": len(records),
+        "chunks": records,
+        "failures": failures,
+    }
+    write_json(knowledge_index_path(), payload)
+    return payload
+
+
+def load_knowledge_index(rebuild: bool = False) -> Dict[str, Any]:
+    path = knowledge_index_path()
+    if rebuild or not path.exists():
+        return build_knowledge_index()
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return build_knowledge_index()
+
+
+def search_knowledge_chunks(query_words: Sequence[str], limit: int = 6) -> List[Dict[str, Any]]:
+    index = load_knowledge_index()
+    words = [word.strip() for word in query_words if len(word.strip()) >= 2]
+    scored: List[Tuple[int, Dict[str, Any]]] = []
+    for chunk in index.get("chunks", []):
+        text = chunk.get("text", "")
+        score = sum((4 if word in chunk.get("keywords", []) else 1) * text.count(word) for word in words)
+        if score > 0:
+            scored.append((score, chunk))
+    scored.sort(key=lambda item: (-item[0], item[1].get("path", ""), item[1].get("chunk_id", "")))
+    return [{**chunk, "score": score} for score, chunk in scored[:limit]]
+
+
 def search_knowledge(query_words: Sequence[str], docs: Sequence[SourceDoc], limit: int = 6) -> List[Tuple[Path, str]]:
     scored: List[Tuple[int, Path, str]] = []
     words = [w for w in query_words if len(w) >= 2]
@@ -546,7 +631,10 @@ def chapter_blueprint(analysis: Dict) -> List[Dict[str, Any]]:
 def generate_chapter_content(chapter: Dict[str, Any], analysis: Dict, docs: Sequence[SourceDoc]) -> str:
     project = analysis.get("meta", {}).get("project_name", "本项目")
     structured = analysis.get("structured", {})
-    refs = search_knowledge(chapter.get("keywords", []), docs, limit=3)
+    query_words = list(chapter.get("keywords", []))
+    for requirement in chapter.get("requirements", [])[:8]:
+        query_words.extend(important_words(requirement))
+    chunk_refs = search_knowledge_chunks(query_words, limit=5)
     lines = [
         f"## {chapter['title']}",
         "",
@@ -579,11 +667,11 @@ def generate_chapter_content(chapter: Dict[str, Any], analysis: Dict, docs: Sequ
         "我方承诺严格按照招标文件及采购人管理要求组织实施，所有响应内容均以真实资料和可执行措施为基础。若中标，将在合同签订、进场准备、服务实施、验收交付等阶段持续接受采购人监督。",
         "",
     ])
-    if refs:
-        lines.append("### 可引用资料")
-        for path, excerpt in refs:
-            lines.append(f"- 来源：`{path.relative_to(ROOT)}`")
-            lines.append(f"  摘要：{excerpt}")
+    if chunk_refs:
+        lines.append("### 知识库检索与引用依据")
+        for ref in chunk_refs:
+            lines.append(f"- 来源：`{ref['path']}`（{ref['category']}，分段 {ref['chunk_id']}）")
+            lines.append(f"  摘要：{best_excerpt(ref['text'], query_words)}")
         lines.append("")
     return "\n".join(lines)
 
@@ -603,8 +691,23 @@ def generate_chapters(analysis: Dict, out_dir: Path, only_id: str | None = None)
         if only_id and item["id"] != only_id:
             chapters.append(existing_map.get(item["id"], item))
             continue
+        query_words = list(item.get("keywords", []))
+        for requirement in item.get("requirements", [])[:8]:
+            query_words.extend(important_words(requirement))
+        retrieved = search_knowledge_chunks(query_words, limit=5)
         content = generate_chapter_content(item, analysis, docs)
-        chapters.append({**item, "content": content, "updated_at": datetime.now().isoformat(timespec="seconds")})
+        chapters.append({
+            **item,
+            "content": content,
+            "knowledge_refs": [{
+                "chunk_id": ref["chunk_id"],
+                "path": ref["path"],
+                "category": ref["category"],
+                "excerpt": best_excerpt(ref["text"], query_words),
+                "score": ref["score"],
+            } for ref in retrieved],
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+        })
     write_json(path, chapters)
     return chapters
 
@@ -685,6 +788,39 @@ def upgraded_review(analysis: Dict, chapters: Sequence[Dict[str, Any]], library:
         if token in text:
             add("重复内容与模板残留检查", "高" if "错误" in token else "中", "确定问题", f"不得残留占位符或错误文本：{token}", f"正文出现：{token}", "定位后替换为真实内容或删除。")
 
+    paragraphs = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if len(line.strip()) >= 40]
+    duplicates: Dict[str, int] = {}
+    for paragraph in paragraphs:
+        key = paragraph[:180]
+        duplicates[key] = duplicates.get(key, 0) + 1
+    repeated = [(paragraph, count) for paragraph, count in duplicates.items() if count >= 2]
+    for paragraph, count in repeated[:6]:
+        add(
+            "重复内容与模板残留检查", "中", "确定问题",
+            "正文不应存在无必要的成段重复内容",
+            f"同一段落重复 {count} 次：{paragraph[:100]}",
+            "保留最符合本章节语境的一处，删除或针对章节要求重写其余重复段。",
+            "章节正文",
+        )
+
+    current_names = {structured.get("project_name", ""), structured.get("purchaser", "")}
+    organization_names = set(re.findall(r"[\u4e00-\u9fa5]{3,30}(?:医院|公司|中心|学校|大学|研究院|管理局)", text))
+    false_positive_prefixes = ("投标人", "确认", "不得", "出现", "响应", "本项目", "招标")
+    unrelated = sorted(
+        name for name in organization_names
+        if name
+        and not any(name in current_name or current_name in name for current_name in current_names if current_name)
+        and not name.startswith(false_positive_prefixes)
+    )
+    for name in unrelated[:6]:
+        add(
+            "重复内容与模板残留检查", "高", "待确认",
+            "不得残留其他项目、医院或客户单位名称",
+            f"正文检出可能的其他单位名称：{name}",
+            "核对该名称是否为本项目合法引用；如为历史模板残留，替换或删除。",
+            "全文检索",
+        )
+
     if "报价" in text or sections.get("price"):
         has_limit = bool(structured.get("budget") or sections.get("price"))
         if has_limit and not any(word in text for word in ["大写", "小写", "总价", "单价", "分项报价"]):
@@ -701,6 +837,19 @@ def upgraded_review(analysis: Dict, chapters: Sequence[Dict[str, Any]], library:
     for item in missing_materials[:8]:
         add("逐页逐表非空检查", item.get("risk", "中"), "待确认", item.get("name", "材料项"), "系统无法确认材料是否非空、有效、已盖章", item.get("advice", "人工打开附件逐项核对。"), "材料清单")
 
+    for line in sections.get("rejection", [])[:12]:
+        words = important_words(line)
+        matched_materials = [item.get("name", "") for item in material_items if any(word in item.get("source", "") + item.get("name", "") for word in words)]
+        add(
+            "废标项专项检查",
+            "高",
+            "待确认" if matched_materials else "确定问题",
+            line,
+            f"关联材料：{'、'.join(matched_materials) if matched_materials else '未自动关联到证明材料'}",
+            "逐字核对否决条款，确认对应表单非空、证件有效、主体一致且签章完整。",
+            "废标项专项清单",
+        )
+
     if not issues:
         add("输出可复核问题单", "低", "仅建议优化", "形成最终问题单并指定复核人", "未发现明显问题", "导出前仍需人工逐页检查签章、报价和附件。")
 
@@ -715,6 +864,37 @@ def upgraded_review(analysis: Dict, chapters: Sequence[Dict[str, Any]], library:
         },
         "issues": issues,
     }
+
+
+def export_format_check(out_dir: Path, docx_path: Path | None = None) -> Dict[str, Any]:
+    from docx import Document
+
+    docx_path = docx_path or out_dir / "完整标书.docx"
+    issues: List[Dict[str, str]] = []
+    if not docx_path.exists() or docx_path.stat().st_size == 0:
+        issues.append({"level": "高", "item": "Word 文件不存在或为空", "action": "重新导出 Word。"})
+    else:
+        doc = Document(str(docx_path))
+        paragraphs = [paragraph.text.strip() for paragraph in doc.paragraphs]
+        nonempty = [text for text in paragraphs if text]
+        if len(nonempty) < 10:
+            issues.append({"level": "高", "item": f"正文段落过少，仅识别到 {len(nonempty)} 段", "action": "确认章节已生成并保存后重新导出。"})
+        heading_count = sum(1 for paragraph in doc.paragraphs if paragraph.style and paragraph.style.name.startswith("Heading"))
+        if heading_count == 0:
+            issues.append({"level": "中", "item": "未识别到 Word 标题样式", "action": "设置章节标题样式后更新自动目录。"})
+        if not any("目录" in text for text in nonempty):
+            issues.append({"level": "中", "item": "未识别到目录文本", "action": "在 Word 中插入或更新自动目录。"})
+        residue = [token for token in ["错误！未定义书签", "XXXX", "待填写", "____"] if any(token in text for text in nonempty)]
+        for token in residue:
+            issues.append({"level": "高", "item": f"导出文件仍含模板残留：{token}", "action": "定位并替换后重新导出。"})
+    report = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "file": str(docx_path.relative_to(ROOT)) if docx_path.exists() else str(docx_path),
+        "passed": not any(item["level"] == "高" for item in issues),
+        "issues": issues,
+    }
+    write_json(out_dir / "08_导出格式检查.json", report)
+    return report
 
 
 def write_review_report(review: Dict[str, Any], out_dir: Path) -> str:
@@ -939,7 +1119,15 @@ def init_project() -> None:
         )
     config = ROOT / "agent_config.json"
     if not config.exists():
-        write_json(config, {"template_bookmark": DEFAULT_TEMPLATE_BOOKMARK, "technical_bid_first": True})
+        write_json(config, {
+            "template_bookmark": DEFAULT_TEMPLATE_BOOKMARK,
+            "technical_bid_first": True,
+            "provider": "local",
+            "model": "",
+            "api_base": "",
+            "temperature": 0.3,
+            "max_tokens": 4096,
+        })
 
 
 def find_template() -> Path | None:
