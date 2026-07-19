@@ -1,0 +1,12 @@
+[project]
+name = "biaoshu-agent"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "python-docx>=1.1.0",
+  "pypdf>=4.0.0",
+  "openpyxl>=3.1.0",
+]
+
+[tool.vercel]
+entrypoint = "web_app:Handler"
