@@ -45,6 +45,7 @@ let selectedChapterId = "";
 let pendingMakeProject = null;
 let activeLibraryTab = "company";
 let checkBidFiles = [];
+const settingsStorageKey = "biaoshu-agent:model-settings";
 
 if (window.location.protocol === "file:") {
   document.getElementById("serverWarning")?.classList.remove("hidden");
@@ -197,14 +198,20 @@ async function loadSettings() {
   try {
     const response = await fetch("/api/settings");
     const data = await response.json();
-    const settings = data.settings || {};
+    const serverSettings = data.settings || {};
+    const browserSettings = serverSettings.storage_mode === "browser"
+      ? JSON.parse(localStorage.getItem(settingsStorageKey) || "{}")
+      : {};
+    const settings = { ...serverSettings, ...browserSettings };
     Object.entries(settings).forEach(([name, value]) => {
       const input = settingsForm.elements[name];
       if (!input) return;
       if (input.type === "checkbox") input.checked = Boolean(value);
       else input.value = value ?? "";
     });
-    document.getElementById("settingsStatus").textContent = settings.has_api_key ? "API Key 已保存" : "当前使用本地规则";
+    document.getElementById("settingsStatus").textContent = settings.storage_mode === "browser"
+      ? (settings.api_key ? "设置已保存在当前浏览器" : "线上设置保存在当前浏览器")
+      : (settings.has_api_key ? "API Key 已保存" : "当前使用本地规则");
   } catch (error) {
     document.getElementById("settingsStatus").textContent = `读取失败：${error.message}`;
   }
@@ -769,7 +776,12 @@ async function saveSettings(event) {
     status.textContent = data.message || "保存失败";
     return;
   }
-  status.textContent = "模型设置已保存。";
+  if (data.settings?.storage_mode === "browser") {
+    localStorage.setItem(settingsStorageKey, JSON.stringify(payload));
+    status.textContent = "模型设置已保存在当前浏览器。";
+  } else {
+    status.textContent = "模型设置已保存。";
+  }
   if (data.settings?.api_key) settingsForm.elements.api_key.value = data.settings.api_key;
 }
 

@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import mimetypes
+import os
 import traceback
 import urllib.parse
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ import biaoshu_agent as agent
 ROOT = Path(__file__).resolve().parent
 STATIC = ROOT / "web"
 MAX_UPLOAD_MB = 80
+IS_VERCEL = bool(os.environ.get("VERCEL"))
 
 
 @dataclass
@@ -129,9 +131,10 @@ def secrets_path() -> Path:
 
 def public_settings() -> Dict[str, Any]:
     settings = read_json_file(config_path(), {})
-    key = read_json_file(secrets_path(), {}).get("api_key", "")
+    key = "" if IS_VERCEL else read_json_file(secrets_path(), {}).get("api_key", "")
     settings["api_key"] = ("*" * 8 + key[-4:]) if key else ""
     settings["has_api_key"] = bool(key)
+    settings["storage_mode"] = "browser" if IS_VERCEL else "server"
     return settings
 
 
@@ -403,8 +406,14 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             current[key] = data[key]
         current.setdefault("template_bookmark", agent.DEFAULT_TEMPLATE_BOOKMARK)
-        write_json_file(config_path(), current)
         api_key = str(data.get("api_key", ""))
+        if IS_VERCEL:
+            current["api_key"] = ("*" * 8 + api_key[-4:]) if api_key else ""
+            current["has_api_key"] = bool(api_key)
+            current["storage_mode"] = "browser"
+            self.send_json({"settings": current})
+            return
+        write_json_file(config_path(), current)
         if api_key and not api_key.startswith("********"):
             write_json_file(secrets_path(), {"api_key": api_key})
         self.send_json({"settings": public_settings()})
