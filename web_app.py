@@ -9,7 +9,9 @@ import json
 import mimetypes
 import os
 import traceback
+import urllib.error
 import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime
 from email.parser import BytesParser
@@ -264,6 +266,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/settings":
                 self.handle_settings_save()
                 return
+            if path == "/api/model-chat":
+                self.handle_model_chat()
+                return
             if path == "/api/knowledge-index":
                 self.handle_knowledge_rebuild()
                 return
@@ -417,6 +422,64 @@ class Handler(BaseHTTPRequestHandler):
         if api_key and not api_key.startswith("********"):
             write_json_file(secrets_path(), {"api_key": api_key})
         self.send_json({"settings": public_settings()})
+
+    def handle_model_chat(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or 0)
+        data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        api_base = str(data.get("api_base", "")).strip().rstrip("/")
+        api_key = str(data.get("api_key", "")).strip()
+        model = str(data.get("model", "")).strip()
+        messages = data.get("messages") or []
+        if not api_base or not api_key or not model:
+            self.send_error_json(400, "请先在模型设置中填写接口地址、模型名称和 API Key")
+            return
+        parsed = urllib.parse.urlparse(api_base)
+        local_hosts = {"127.0.0.1", "localhost", "::1"}
+        if parsed.scheme not in {"https", "http"} or (parsed.scheme == "http" and parsed.hostname not in local_hosts):
+            self.send_error_json(400, "线上模型接口必须使用 HTTPS")
+            return
+        if not isinstance(messages, list) or not messages:
+            self.send_error_json(400, "请输入测试消息")
+            return
+        safe_messages = [
+            {"role": item.get("role", "user"), "content": str(item.get("content", ""))[:12000]}
+            for item in messages[-12:]
+            if isinstance(item, dict) and item.get("role") in {"system", "user", "assistant"}
+        ]
+        endpoint = api_base if api_base.endswith("/chat/completions") else f"{api_base}/chat/completions"
+        payload = {
+            "model": model,
+            "messages": safe_messages,
+            "temperature": float(data.get("temperature", 0.3)),
+            "max_tokens": min(int(data.get("max_tokens", 1024)), 4096),
+        }
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")[:1000]
+            self.send_error_json(502, f"模型接口返回 {exc.code}：{detail}")
+            return
+        except Exception as exc:
+            self.send_error_json(502, f"模型连接失败：{exc}")
+            return
+        choices = result.get("choices") or []
+        content = choices[0].get("message", {}).get("content", "") if choices else ""
+        if not content:
+            self.send_error_json(502, "模型接口已响应，但没有返回可读取的对话内容")
+            return
+        self.send_json({
+            "reply": content,
+            "requested_model": model,
+            "response_model": result.get("model") or model,
+            "usage": result.get("usage") or {},
+        })
 
     def handle_knowledge_rebuild(self) -> None:
         self.send_json({"index": agent.build_knowledge_index()})

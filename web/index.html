@@ -41,6 +41,10 @@
           <span>⚙</span>
           <em>模型设置</em>
         </button>
+        <button class="rail-item" data-view="model-chat" title="模型测试">
+          <span>◉</span>
+          <em>模型测试</em>
+        </button>
         <div class="rail-spacer"></div>
         <button class="rail-item rail-bottom" title="收起">
           <span>»</span>
@@ -271,6 +275,26 @@
             <label class="switch-label"><input name="technical_bid_first" type="checkbox" checked /><span></span>技术标优先</label>
             <footer><button class="gold-btn" type="submit">保存模型设置</button></footer>
           </form>
+        </section>
+
+        <section id="model-chat" class="view simple-view">
+          <div class="crumbs"><span>工作台</span><span>›</span><span class="strong">模型测试</span></div>
+          <div class="model-chat-shell">
+            <header>
+              <div><h2>模型连接测试</h2><p>实际模型以接口响应的 model 字段为准，模型自己的文字回答仅供参考。</p></div>
+              <div id="modelIdentity" class="model-identity">尚未测试</div>
+            </header>
+            <div id="modelChatMessages" class="model-chat-messages">
+              <article class="chat-message assistant"><strong>系统</strong><p>点击“测试连接”，或输入一条消息开始对话。</p></article>
+            </div>
+            <form id="modelChatForm" class="model-chat-form">
+              <textarea id="modelChatInput" placeholder="例如：请简短说明你擅长如何辅助标书写作。"></textarea>
+              <div>
+                <button id="testModelBtn" class="white-btn" type="button">测试连接</button>
+                <button class="gold-btn" type="submit">发送</button>
+              </div>
+            </form>
+          </div>
         </section>
       </main>
 

@@ -35,6 +35,10 @@ const settingsForm = document.getElementById("settingsForm");
 const taskProgressPanel = document.getElementById("taskProgressPanel");
 const outlineTaskStatus = document.getElementById("outlineTaskStatus");
 const knowledgeIndexStatus = document.getElementById("knowledgeIndexStatus");
+const modelChatForm = document.getElementById("modelChatForm");
+const modelChatInput = document.getElementById("modelChatInput");
+const modelChatMessages = document.getElementById("modelChatMessages");
+const modelIdentity = document.getElementById("modelIdentity");
 
 let projects = [];
 let currentProject = null;
@@ -46,6 +50,7 @@ let pendingMakeProject = null;
 let activeLibraryTab = "company";
 let checkBidFiles = [];
 const settingsStorageKey = "biaoshu-agent:model-settings";
+let modelChatHistory = [];
 
 if (window.location.protocol === "file:") {
   document.getElementById("serverWarning")?.classList.remove("hidden");
@@ -100,6 +105,8 @@ checkTenderInput.addEventListener("change", handleCheckTenderUpload);
 checkBidInput.addEventListener("change", handleCheckBidUpload);
 settingsForm.addEventListener("submit", saveSettings);
 document.getElementById("rebuildIndexBtn").addEventListener("click", rebuildKnowledgeIndex);
+document.getElementById("testModelBtn").addEventListener("click", testModelConnection);
+modelChatForm.addEventListener("submit", sendModelChat);
 
 document.querySelectorAll(".length-grid button").forEach((button) => {
   button.addEventListener("click", () => {
@@ -143,7 +150,7 @@ makeTender.addEventListener("change", () => {
 });
 
 function showView(id) {
-  const aliases = { interpret: "interpret", make: "make", check: "check", library: "library", history: "history", templates: "templates", outputs: "outputs", settings: "settings" };
+  const aliases = { interpret: "interpret", make: "make", check: "check", library: "library", history: "history", templates: "templates", outputs: "outputs", settings: "settings", "model-chat": "model-chat" };
   const viewId = aliases[id] || id;
   views.forEach((view) => view.classList.toggle("active-view", view.id === viewId));
   railItems.forEach((item) => item.classList.toggle("active", item.dataset.view === id || item.dataset.view === viewId));
@@ -783,6 +790,68 @@ async function saveSettings(event) {
     status.textContent = "模型设置已保存。";
   }
   if (data.settings?.api_key) settingsForm.elements.api_key.value = data.settings.api_key;
+}
+
+function currentModelSettings() {
+  const stored = JSON.parse(localStorage.getItem(settingsStorageKey) || "{}");
+  if (Object.keys(stored).length) return stored;
+  return Object.fromEntries(new FormData(settingsForm).entries());
+}
+
+async function testModelConnection() {
+  await requestModelReply("请只回复：连接成功。然后用一句话说明你是什么模型。", true);
+}
+
+async function sendModelChat(event) {
+  event.preventDefault();
+  const message = modelChatInput.value.trim();
+  if (!message) return;
+  modelChatInput.value = "";
+  await requestModelReply(message, false);
+}
+
+async function requestModelReply(message, isTest) {
+  const settings = currentModelSettings();
+  if (!settings.api_key || !settings.api_base || !settings.model) {
+    modelIdentity.textContent = "请先完成模型设置";
+    showView("settings");
+    return;
+  }
+  modelChatHistory.push({ role: "user", content: message });
+  renderModelChat("user", message);
+  modelIdentity.textContent = "正在连接...";
+  const response = await fetch("/api/model-chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      ...settings,
+      max_tokens: isTest ? 300 : Number(settings.max_tokens || 1024),
+      messages: [
+        { role: "system", content: "你是标书写作辅助模型。不得编造资质、业绩、金额、人员或招标要求；不确定的信息必须明确标注待确认。" },
+        ...modelChatHistory,
+      ],
+    }),
+  });
+  const data = await response.json();
+  if (!response.ok || data.status === "error") {
+    modelIdentity.textContent = "连接失败";
+    renderModelChat("error", data.message || "模型请求失败");
+    return;
+  }
+  modelChatHistory.push({ role: "assistant", content: data.reply });
+  modelIdentity.textContent = `实际响应：${data.response_model || data.requested_model}`;
+  renderModelChat("assistant", data.reply);
+}
+
+function renderModelChat(role, content) {
+  const labels = { user: "你", assistant: "模型", error: "错误" };
+  modelChatMessages.insertAdjacentHTML("beforeend", `
+    <article class="chat-message ${role}">
+      <strong>${labels[role] || "消息"}</strong>
+      <p>${escapeHtml(content).replace(/\n/g, "<br />")}</p>
+    </article>
+  `);
+  modelChatMessages.scrollTop = modelChatMessages.scrollHeight;
 }
 
 async function rebuildKnowledgeIndex() {
