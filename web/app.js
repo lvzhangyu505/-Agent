@@ -214,10 +214,10 @@ async function loadSettings() {
       const input = settingsForm.elements[name];
       if (!input) return;
       if (input.type === "checkbox") input.checked = Boolean(value);
-      else input.value = value ?? "";
+      else input.value = name === "api_key" && isMaskedApiKey(value) ? "" : (value ?? "");
     });
     document.getElementById("settingsStatus").textContent = settings.storage_mode === "browser"
-      ? (settings.api_key ? "设置已保存在当前浏览器" : "线上设置保存在当前浏览器")
+      ? (isMaskedApiKey(settings.api_key) ? "API Key 已被遮罩，请重新粘贴完整 Token" : (settings.api_key ? "设置已保存在当前浏览器" : "线上设置保存在当前浏览器"))
       : (settings.has_api_key ? "API Key 已保存" : "当前使用本地规则");
   } catch (error) {
     document.getElementById("settingsStatus").textContent = `读取失败：${error.message}`;
@@ -770,6 +770,14 @@ async function saveSettings(event) {
   const status = document.getElementById("settingsStatus");
   status.textContent = "正在保存...";
   const payload = Object.fromEntries(new FormData(settingsForm).entries());
+  const stored = JSON.parse(localStorage.getItem(settingsStorageKey) || "{}");
+  if (isMaskedApiKey(payload.api_key)) {
+    if (!isMaskedApiKey(stored.api_key)) payload.api_key = stored.api_key || "";
+    else {
+      status.textContent = "请重新粘贴完整 API Key 后再保存。";
+      return;
+    }
+  }
   payload.technical_bid_first = settingsForm.elements.technical_bid_first.checked;
   payload.temperature = Number(payload.temperature);
   payload.max_tokens = Number(payload.max_tokens);
@@ -789,7 +797,13 @@ async function saveSettings(event) {
   } else {
     status.textContent = "模型设置已保存。";
   }
-  if (data.settings?.api_key) settingsForm.elements.api_key.value = data.settings.api_key;
+  if (data.settings?.storage_mode !== "browser" && data.settings?.api_key) {
+    settingsForm.elements.api_key.value = data.settings.api_key;
+  }
+}
+
+function isMaskedApiKey(value) {
+  return /^\*{4,}/.test(String(value || ""));
 }
 
 function currentModelSettings() {

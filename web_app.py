@@ -424,7 +424,7 @@ class Handler(BaseHTTPRequestHandler):
         current.setdefault("template_bookmark", agent.DEFAULT_TEMPLATE_BOOKMARK)
         api_key = str(data.get("api_key", ""))
         if IS_VERCEL:
-            current["api_key"] = ("*" * 8 + api_key[-4:]) if api_key else ""
+            current["api_key"] = ""
             current["has_api_key"] = bool(api_key)
             current["storage_mode"] = "browser"
             self.send_json({"settings": current})
