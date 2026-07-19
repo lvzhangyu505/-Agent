@@ -140,6 +140,17 @@ def public_settings() -> Dict[str, Any]:
     return settings
 
 
+def model_chat_endpoints(api_base: str) -> List[str]:
+    """Return OpenAI-compatible chat endpoints, accepting either a root URL or /v1 base."""
+    base = api_base.strip().rstrip("/")
+    if base.endswith("/chat/completions"):
+        return [base]
+    parsed = urllib.parse.urlparse(base)
+    if not parsed.path.strip("/"):
+        return [f"{base}/v1/chat/completions", f"{base}/chat/completions"]
+    return [f"{base}/chat/completions"]
+
+
 def task_path(project: str) -> Path:
     return safe_inside(agent.DIRS["outputs"] / project / "任务状态.json")
 
@@ -446,28 +457,39 @@ class Handler(BaseHTTPRequestHandler):
             for item in messages[-12:]
             if isinstance(item, dict) and item.get("role") in {"system", "user", "assistant"}
         ]
-        endpoint = api_base if api_base.endswith("/chat/completions") else f"{api_base}/chat/completions"
         payload = {
             "model": model,
             "messages": safe_messages,
             "temperature": float(data.get("temperature", 0.3)),
             "max_tokens": min(int(data.get("max_tokens", 1024)), 4096),
         }
-        request = urllib.request.Request(
-            endpoint,
-            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=45) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="ignore")[:1000]
-            self.send_error_json(502, f"模型接口返回 {exc.code}：{detail}")
-            return
-        except Exception as exc:
-            self.send_error_json(502, f"模型连接失败：{exc}")
+        result = None
+        last_http_error = None
+        attempted_endpoints = model_chat_endpoints(api_base)
+        for endpoint in attempted_endpoints:
+            request = urllib.request.Request(
+                endpoint,
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=45) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", errors="ignore")[:1000]
+                last_http_error = (exc.code, detail, endpoint)
+                if exc.code != 404:
+                    break
+            except Exception as exc:
+                self.send_error_json(502, f"模型连接失败：{exc}")
+                return
+        if result is None and last_http_error:
+            code, detail, endpoint = last_http_error
+            hint = "请检查接口地址是否为 OpenAI 兼容 API 根地址（通常以 /v1 结尾），并核对模型名称。" if code == 404 else "请检查 API Key、模型名称和服务商状态。"
+            suffix = f"；服务端信息：{detail}" if detail else ""
+            self.send_error_json(502, f"模型接口返回 {code}，请求地址：{endpoint}。{hint}{suffix}")
             return
         choices = result.get("choices") or []
         content = choices[0].get("message", {}).get("content", "") if choices else ""
