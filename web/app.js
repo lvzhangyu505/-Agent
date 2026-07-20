@@ -164,10 +164,13 @@ async function runUpload(form, source) {
   const fileLabel = source === "make" ? document.getElementById("makeFileName") : document.getElementById("interpretFileName");
   fileLabel.textContent = "正在智能解读并生成标书，请稍候...";
   try {
-    const response = await fetch("/api/run", { method: "POST", body: new FormData(form) });
+    const body = new FormData(form);
+    body.append("model_settings", JSON.stringify(currentModelSettings()));
+    const response = await fetch("/api/run", { method: "POST", body });
     const data = await response.json();
     if (!response.ok || data.status === "error") throw new Error(data.message || "生成失败");
     await loadProjects(data.project);
+    fileLabel.textContent = modelCallText(data.model_call);
     if (source === "make") showRawView("outline");
     else showView("interpret");
   } catch (error) {
@@ -333,6 +336,7 @@ async function handleCheckTenderUpload() {
   checkTenderHint.textContent = "正在上传并解读招标文件...";
   const form = new FormData();
   form.append("tender", file);
+  form.append("model_settings", JSON.stringify(currentModelSettings()));
   try {
     const response = await fetch("/api/run", { method: "POST", body: form });
     const data = await response.json();
@@ -508,6 +512,7 @@ function renderStructuredInsight(structured, sections) {
   ].filter(([, value]) => value);
   const risk = (safeFullAnalysis().risks || [])[0];
   return `
+    ${renderModelCallBadge(safeFullAnalysis().model_call)}
     <div class="risk-bar"><span class="risk-good">◎ ${risk ? "需复核重点风险" : "建议参与"}</span><span class="risk-badge">结构化字段：${rows.length} 项</span></div>
     <div class="tab-card">
       ${rows.map(([label, value]) => `<p><strong>${label}：</strong>${escapeHtml(value)}</p>`).join("") || "<p>暂未识别到明确项目字段，请人工补充。</p>"}
@@ -585,7 +590,7 @@ function updateEstimate() {
   wordEstimate.textContent = `${(pages * 700).toLocaleString("zh-CN")}字`;
 }
 
-function generateBidBody() {
+async function generateBidBody() {
   lengthModal.classList.add("hidden");
   if (lengthModal.dataset.mode === "beforeMake") {
     if (pendingMakeProject) currentProject = pendingMakeProject;
@@ -598,6 +603,9 @@ function generateBidBody() {
   }
   lengthModal.dataset.mode = "";
   document.getElementById("downloadBidBtn").classList.remove("disabled");
+  if (currentProject && !currentProject.demo && selectedChapterId) {
+    await regenerateSelectedChapter();
+  }
 }
 
 function renderSelectedChapter() {
@@ -622,8 +630,9 @@ function renderChapterRefs(chapter) {
     ...(safeFullAnalysis().material_items || []).slice(0, 5).map((item) => ({ title: item.category || "材料", text: `${item.name}：${item.advice}` })),
   ];
   return `
+    ${renderModelCallBadge(chapter.model_call)}
     <h3>引用与检查</h3>
-    <button class="tool-btn" id="regenChapterBtn">重新生成本章</button>
+    <button class="tool-btn" id="regenChapterBtn">AI 生成当前章节</button>
     ${refs.map((item) => `<div class="ref-card"><strong>${escapeHtml(item.title)}</strong><p>${escapeHtml(item.text || "")}</p></div>`).join("") || "<p>暂无引用要求。</p>"}
   `;
 }
@@ -634,7 +643,7 @@ async function regenerateSelectedChapter() {
   const response = await fetch("/api/generate-chapter", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project: currentProject.name, chapter_id: selectedChapterId }),
+    body: JSON.stringify({ project: currentProject.name, chapter_id: selectedChapterId, model_settings: currentModelSettings() }),
   });
   const data = await response.json();
   if (!response.ok || data.status === "error") {
@@ -684,7 +693,7 @@ async function runUpgradedReview() {
   const response = await fetch("/api/run-review", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project: currentProject.name }),
+    body: JSON.stringify({ project: currentProject.name, model_settings: currentModelSettings() }),
   });
   const data = await response.json();
   if (!response.ok || data.status === "error") {
@@ -702,6 +711,7 @@ function renderReview() {
   const summary = review.summary || {};
   const issues = review.issues || [];
   document.getElementById("reviewSummary").innerHTML = `
+    ${renderModelCallBadge(review.model_call)}
     <div><span>问题总数</span><strong>${summary.total || 0}</strong></div>
     <div><span>高风险</span><strong>${summary.high || 0}</strong></div>
     <div><span>中风险</span><strong>${summary.medium || 0}</strong></div>
@@ -718,6 +728,24 @@ function renderReview() {
       </article>`).join("")
     : `<div class="warn-box">尚未运行升级版审查。</div>`;
   renderFormatCheck(currentProjectData?.format_check || {});
+}
+
+function modelCallText(call) {
+  if (!call) return "未记录模型调用";
+  if (call.status === "success") return `AI 成功：${call.response_model || call.requested_model || "外部模型"}`;
+  if (call.status === "fallback") return `AI 失败，已使用本地规则：${call.error || "未知错误"}`;
+  return "使用本地规则，未调用外部模型";
+}
+
+function renderModelCallBadge(call) {
+  if (!call) return `<div class="model-call-badge local">未记录模型调用来源</div>`;
+  const usage = call.usage || {};
+  const totalTokens = usage.total_tokens || usage.total || "";
+  const detail = call.status === "success"
+    ? `实际模型：${call.response_model || call.requested_model || "未知"}${totalTokens ? ` · Tokens：${totalTokens}` : ""}`
+    : (call.error || "未调用外部模型");
+  const label = call.status === "success" ? "AI 已调用" : (call.status === "fallback" ? "AI 失败 / 本地兜底" : "本地规则");
+  return `<div class="model-call-badge ${escapeHtml(call.status || "local")}"><strong>${label}</strong><span>${escapeHtml(detail)}</span></div>`;
 }
 
 async function exportFinalDocx() {
@@ -808,8 +836,13 @@ function isMaskedApiKey(value) {
 
 function currentModelSettings() {
   const stored = JSON.parse(localStorage.getItem(settingsStorageKey) || "{}");
-  if (Object.keys(stored).length) return stored;
-  return Object.fromEntries(new FormData(settingsForm).entries());
+  const formSettings = Object.fromEntries(new FormData(settingsForm).entries());
+  const formKey = String(formSettings.api_key || "");
+  const storedKey = String(stored.api_key || "");
+  const apiKey = formKey && !isMaskedApiKey(formKey)
+    ? formKey
+    : (!isMaskedApiKey(storedKey) ? storedKey : "");
+  return { ...stored, ...formSettings, api_key: apiKey };
 }
 
 async function testModelConnection() {

@@ -151,6 +151,215 @@ def model_chat_endpoints(api_base: str) -> List[str]:
     return [f"{base}/chat/completions"]
 
 
+class ModelCallError(RuntimeError):
+    pass
+
+
+def normalize_model_settings(value: Any) -> Dict[str, Any]:
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "provider": str(value.get("provider", "local")).strip(),
+        "model": str(value.get("model", "")).strip(),
+        "api_base": str(value.get("api_base", "")).strip().rstrip("/"),
+        "api_key": str(value.get("api_key", "")).strip(),
+        "temperature": float(value.get("temperature", 0.3) or 0.3),
+        "max_tokens": min(max(int(value.get("max_tokens", 4096) or 4096), 256), 128000),
+    }
+
+
+def external_model_ready(settings: Dict[str, Any]) -> bool:
+    key = str(settings.get("api_key", ""))
+    return (
+        settings.get("provider") == "openai-compatible"
+        and bool(settings.get("api_base"))
+        and bool(settings.get("model"))
+        and bool(key)
+        and not key.startswith("****")
+    )
+
+
+def call_compatible_model(
+    settings: Dict[str, Any],
+    messages: List[Dict[str, str]],
+    max_tokens: int | None = None,
+) -> Dict[str, Any]:
+    api_base = str(settings.get("api_base", "")).strip().rstrip("/")
+    api_key = str(settings.get("api_key", "")).strip()
+    model = str(settings.get("model", "")).strip()
+    if not external_model_ready(settings):
+        raise ModelCallError("外部模型设置不完整，请重新填写接口地址、模型名称和完整 API Key")
+    parsed = urllib.parse.urlparse(api_base)
+    local_hosts = {"127.0.0.1", "localhost", "::1"}
+    if parsed.scheme not in {"https", "http"} or (parsed.scheme == "http" and parsed.hostname not in local_hosts):
+        raise ModelCallError("线上模型接口必须使用 HTTPS")
+    safe_messages = [
+        {"role": item.get("role", "user"), "content": str(item.get("content", ""))[:40000]}
+        for item in messages[-12:]
+        if isinstance(item, dict) and item.get("role") in {"system", "user", "assistant"}
+    ]
+    if not safe_messages:
+        raise ModelCallError("模型请求缺少有效消息")
+    payload = {
+        "model": model,
+        "messages": safe_messages,
+        "temperature": float(settings.get("temperature", 0.3)),
+        "max_tokens": min(max_tokens or int(settings.get("max_tokens", 4096)), 8192),
+    }
+    result = None
+    last_http_error = None
+    for endpoint in model_chat_endpoints(api_base):
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore")[:1000]
+            last_http_error = (exc.code, detail, endpoint)
+            if exc.code != 404:
+                break
+        except Exception as exc:
+            raise ModelCallError(f"模型连接失败：{exc}") from exc
+    if result is None and last_http_error:
+        code, detail, endpoint = last_http_error
+        hint = "请检查接口地址和模型名称" if code in {404, 503} else "请检查 API Key、模型名称和服务商状态"
+        safe_detail = "" if code in {401, 403} else detail
+        suffix = f"；服务端信息：{safe_detail}" if safe_detail else ""
+        raise ModelCallError(f"模型接口返回 {code}，请求地址：{endpoint}。{hint}{suffix}")
+    choices = result.get("choices") or []
+    content = choices[0].get("message", {}).get("content", "") if choices else ""
+    if not isinstance(content, str) or not content.strip():
+        raise ModelCallError("模型接口已响应，但没有返回可读取的对话内容")
+    return {
+        "content": content.strip(),
+        "requested_model": model,
+        "response_model": result.get("model") or model,
+        "usage": result.get("usage") or {},
+    }
+
+
+def parse_json_content(content: str) -> Dict[str, Any]:
+    text = content.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines:
+            lines = lines[1:]
+        if lines and lines[-1].strip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end < start:
+        raise ModelCallError("模型未返回有效 JSON 对象")
+    try:
+        value = json.loads(text[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise ModelCallError(f"模型返回的 JSON 无法解析：{exc.msg}") from exc
+    if not isinstance(value, dict):
+        raise ModelCallError("模型返回结果不是 JSON 对象")
+    return value
+
+
+def model_call_record(stage: str, status: str, settings: Dict[str, Any], **extra: Any) -> Dict[str, Any]:
+    return {
+        "stage": stage,
+        "status": status,
+        "source": "external_model" if status == "success" else ("local_rules" if status == "local" else "local_fallback"),
+        "requested_model": settings.get("model", ""),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        **extra,
+    }
+
+
+def append_model_call(out_dir: Path, record: Dict[str, Any]) -> None:
+    path = out_dir / "09_AI调用记录.json"
+    records = read_json_file(path, [])
+    if not isinstance(records, list):
+        records = []
+    records.append(record)
+    write_json_file(path, records[-100:])
+
+
+def merge_ai_analysis(analysis: Dict[str, Any], source_text: str, ai: Dict[str, Any]) -> Dict[str, Any]:
+    sections = analysis.setdefault("sections", {})
+    ai_sections = ai.get("sections") if isinstance(ai.get("sections"), dict) else {}
+    for key in agent.KEYWORDS:
+        values = ai_sections.get(key, [])
+        if not isinstance(values, list):
+            continue
+        validated = [str(item).strip() for item in values if isinstance(item, str) and str(item).strip() in source_text]
+        sections[key] = list(dict.fromkeys([*sections.get(key, []), *validated]))[:30]
+    structured = analysis.setdefault("structured", {})
+    ai_structured = ai.get("structured") if isinstance(ai.get("structured"), dict) else {}
+    evidence = ai.get("evidence") if isinstance(ai.get("evidence"), dict) else {}
+    allowed_fields = {"project_name", "project_no", "purchaser", "agency", "budget", "service_period", "bid_deadline", "bid_location"}
+    accepted_evidence: Dict[str, str] = {}
+    for key in allowed_fields:
+        value = str(ai_structured.get(key, "")).strip()
+        quote = str(evidence.get(key, "")).strip()
+        if value and quote and quote in source_text:
+            structured[key] = value
+            accepted_evidence[key] = quote
+    analysis["ai_evidence"] = accepted_evidence
+    analysis["requirements"] = agent.build_requirement_items(sections)
+    analysis["scoring_items"] = agent.build_scoring_items(sections.get("scoring", []))
+    analysis["material_items"] = agent.build_material_items(sections, structured)
+    analysis["timeline_items"] = agent.build_timeline_items(structured, sections)
+    analysis["risks"] = agent.build_risks(sections)
+    analysis["checklist"] = agent.build_checklist(sections)
+    return analysis
+
+
+def merge_ai_review(review: Dict[str, Any], ai: Dict[str, Any], tender_text: str, bid_text: str) -> int:
+    items = ai.get("issues") if isinstance(ai.get("issues"), list) else []
+    accepted = 0
+    for item in items[:20]:
+        if not isinstance(item, dict):
+            continue
+        requirement_source = str(item.get("requirement_source", "")).strip()
+        bid_source = str(item.get("bid_source", "")).strip()
+        if requirement_source and requirement_source not in tender_text:
+            continue
+        if bid_source and bid_source not in bid_text:
+            continue
+        if not requirement_source and not bid_source:
+            continue
+        level = str(item.get("level", "中")).strip()
+        if level not in {"高", "中", "低"}:
+            level = "中"
+        review.setdefault("issues", []).append({
+            "rule": "AI语义审查",
+            "level": level,
+            "status": "待人工复核",
+            "location": str(item.get("location", "章节正文")).strip() or "章节正文",
+            "requirement": requirement_source or "未引用招标原文",
+            "current": bid_source or "标书中未找到明确响应原文",
+            "risk": str(item.get("risk", "")).strip() or level,
+            "action": str(item.get("action", "")).strip() or "人工核对招标原文并补充明确响应。",
+            "reviewer": "AI初审，待人工复核",
+        })
+        accepted += 1
+    issues = review.get("issues", [])
+    review["summary"] = {
+        "total": len(issues),
+        "high": sum(1 for item in issues if item.get("level") == "高"),
+        "medium": sum(1 for item in issues if item.get("level") == "中"),
+        "low": sum(1 for item in issues if item.get("level") == "低"),
+    }
+    return accepted
+
+
 def task_path(project: str) -> Path:
     return safe_inside(agent.DIRS["outputs"] / project / "任务状态.json")
 
@@ -241,6 +450,7 @@ class Handler(BaseHTTPRequestHandler):
                         "chapters": read_project_json(project, "05_章节正文.json", []),
                         "review": read_project_json(project, "07_升级版审查问题单.json", {}),
                         "format_check": read_project_json(project, "08_导出格式检查.json", {}),
+                        "model_calls": read_project_json(project, "09_AI调用记录.json", []),
                         "task": read_project_json(project, "任务状态.json", {}),
                     }
                 )
@@ -306,6 +516,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error_json(413, f"上传文件总大小超过 {MAX_UPLOAD_MB}MB")
                 return
             form = self.parse_multipart(length)
+            model_settings = normalize_model_settings(self.first_text(form, "model_settings"))
             tender = save_upload(form.get("tender", [None])[0], agent.DIRS["tenders"])
             if not tender:
                 self.send_error_json(400, "请上传招标文件")
@@ -318,14 +529,63 @@ class Handler(BaseHTTPRequestHandler):
 
             analysis, out_dir = agent.analyze_tender(tender)
             project = out_dir.name
-            update_task(project, "analyze", 20, "招标文件结构化解读完成")
+            source_text = read_project_text(project, "招标文件全文.txt")
+            if external_model_ready(model_settings):
+                try:
+                    result = call_compatible_model(
+                        model_settings,
+                        [
+                            {
+                                "role": "system",
+                                "content": (
+                                    "你是严谨的中国招投标文件解读助手。只能依据用户提供的招标原文，不得编造。"
+                                    "输出一个 JSON 对象，不要输出 Markdown。sections 中的每一项必须逐字引用原文；"
+                                    "structured 中的字段必须在 evidence 中给出逐字原文依据。"
+                                ),
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    "请解读下列招标文件，输出结构："
+                                    '{"structured":{"project_name":"","project_no":"","purchaser":"","agency":"","budget":"","service_period":"","bid_deadline":"","bid_location":""},'
+                                    '"evidence":{"字段名":"对应逐字原文"},'
+                                    '"sections":{"project":[],"qualification":[],"rejection":[],"scoring":[],"business":[],"price":[],"format":[]}}。'
+                                    "无法确认的字段留空。原文如下：\n" + source_text[:30000]
+                                ),
+                            },
+                        ],
+                        max_tokens=4096,
+                    )
+                    ai_analysis = parse_json_content(result["content"])
+                    analysis = merge_ai_analysis(analysis, source_text, ai_analysis)
+                    call_record = model_call_record(
+                        "智能解读",
+                        "success",
+                        model_settings,
+                        response_model=result["response_model"],
+                        usage=result["usage"],
+                        accepted_evidence=len(analysis.get("ai_evidence", {})),
+                    )
+                    update_task(project, "analyze", 20, f"智能解读完成，实际模型：{result['response_model']}")
+                except ModelCallError as exc:
+                    call_record = model_call_record("智能解读", "fallback", model_settings, error=str(exc))
+                    update_task(project, "analyze", 20, f"AI 解读失败，已明确使用本地规则：{exc}")
+            else:
+                call_record = model_call_record("智能解读", "local", model_settings, error="未启用或未完整配置外部模型")
+                update_task(project, "analyze", 20, "使用本地规则完成招标文件结构化解读")
+            analysis["model_call"] = call_record
+            write_json_file(out_dir / "01_招标文件解读.json", analysis)
+            append_model_call(out_dir, call_record)
             agent.build_knowledge_index()
             update_task(project, "index", 35, "知识库分段索引完成")
             agent.make_outline(analysis, out_dir)
             update_task(project, "outline", 50, "投标目录生成完成")
             agent.draft_bid(analysis, out_dir)
-            agent.generate_chapters(analysis, out_dir)
-            update_task(project, "chapters", 75, "章节检索与生成完成")
+            chapters = agent.generate_chapters(analysis, out_dir)
+            for chapter in chapters:
+                chapter["model_call"] = model_call_record("章节基线", "local", model_settings, error="等待按章节调用外部模型")
+            agent.save_chapters(out_dir, chapters)
+            update_task(project, "chapters", 75, "本地章节基线已生成，可按章节调用外部模型")
             agent.compliance_check(analysis, out_dir / "03_标书初稿.md", out_dir)
             update_task(project, "review", 88, "基础合规检查完成")
             docx = agent.export_chapters_docx(out_dir, agent.find_template())
@@ -337,6 +597,7 @@ class Handler(BaseHTTPRequestHandler):
                     "out_dir": str(out_dir.relative_to(ROOT)),
                     "docx": str(docx.relative_to(ROOT)),
                     "projects": list_projects(),
+                    "model_call": call_record,
                 }
             )
         except Exception as exc:
@@ -437,71 +698,17 @@ class Handler(BaseHTTPRequestHandler):
     def handle_model_chat(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
         data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-        api_base = str(data.get("api_base", "")).strip().rstrip("/")
-        api_key = str(data.get("api_key", "")).strip()
-        model = str(data.get("model", "")).strip()
+        settings = normalize_model_settings(data)
         messages = data.get("messages") or []
-        if not api_base or not api_key or not model:
-            self.send_error_json(400, "请先在模型设置中填写接口地址、模型名称和 API Key")
-            return
-        parsed = urllib.parse.urlparse(api_base)
-        local_hosts = {"127.0.0.1", "localhost", "::1"}
-        if parsed.scheme not in {"https", "http"} or (parsed.scheme == "http" and parsed.hostname not in local_hosts):
-            self.send_error_json(400, "线上模型接口必须使用 HTTPS")
-            return
         if not isinstance(messages, list) or not messages:
             self.send_error_json(400, "请输入测试消息")
             return
-        safe_messages = [
-            {"role": item.get("role", "user"), "content": str(item.get("content", ""))[:12000]}
-            for item in messages[-12:]
-            if isinstance(item, dict) and item.get("role") in {"system", "user", "assistant"}
-        ]
-        payload = {
-            "model": model,
-            "messages": safe_messages,
-            "temperature": float(data.get("temperature", 0.3)),
-            "max_tokens": min(int(data.get("max_tokens", 1024)), 4096),
-        }
-        result = None
-        last_http_error = None
-        attempted_endpoints = model_chat_endpoints(api_base)
-        for endpoint in attempted_endpoints:
-            request = urllib.request.Request(
-                endpoint,
-                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                method="POST",
-            )
-            try:
-                with urllib.request.urlopen(request, timeout=45) as response:
-                    result = json.loads(response.read().decode("utf-8"))
-                break
-            except urllib.error.HTTPError as exc:
-                detail = exc.read().decode("utf-8", errors="ignore")[:1000]
-                last_http_error = (exc.code, detail, endpoint)
-                if exc.code != 404:
-                    break
-            except Exception as exc:
-                self.send_error_json(502, f"模型连接失败：{exc}")
-                return
-        if result is None and last_http_error:
-            code, detail, endpoint = last_http_error
-            hint = "请检查接口地址是否为 OpenAI 兼容 API 根地址（通常以 /v1 结尾），并核对模型名称。" if code == 404 else "请检查 API Key、模型名称和服务商状态。"
-            suffix = f"；服务端信息：{detail}" if detail else ""
-            self.send_error_json(502, f"模型接口返回 {code}，请求地址：{endpoint}。{hint}{suffix}")
+        try:
+            result = call_compatible_model(settings, messages, max_tokens=int(data.get("max_tokens", 1024)))
+        except ModelCallError as exc:
+            self.send_error_json(502, str(exc))
             return
-        choices = result.get("choices") or []
-        content = choices[0].get("message", {}).get("content", "") if choices else ""
-        if not content:
-            self.send_error_json(502, "模型接口已响应，但没有返回可读取的对话内容")
-            return
-        self.send_json({
-            "reply": content,
-            "requested_model": model,
-            "response_model": result.get("model") or model,
-            "usage": result.get("usage") or {},
-        })
+        self.send_json({"reply": result["content"], **{key: value for key, value in result.items() if key != "content"}})
 
     def handle_knowledge_rebuild(self) -> None:
         self.send_json({"index": agent.build_knowledge_index()})
@@ -534,12 +741,76 @@ class Handler(BaseHTTPRequestHandler):
         data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
         project = data.get("project") or ""
         chapter_id = data.get("chapter_id") or ""
+        model_settings = normalize_model_settings(data.get("model_settings"))
         out_dir = safe_inside(agent.DIRS["outputs"] / project)
         analysis = read_json_file(out_dir / "01_招标文件解读.json", {})
         update_task(project, "chapter-retrieval", 55, f"正在为章节 {chapter_id or '全部'} 检索知识库")
         chapters = agent.generate_chapters(analysis, out_dir, only_id=chapter_id or None)
-        task = update_task(project, "chapter-ready", 80, f"章节 {chapter_id or '全部'} 已生成，等待人工确认")
-        self.send_json({"project": project, "chapters": chapters, "task": task})
+        target = next((item for item in chapters if item.get("id") == chapter_id), None)
+        if target and external_model_ready(model_settings):
+            try:
+                requirement_context = json.dumps(target.get("requirements", [])[:12], ensure_ascii=False)
+                knowledge_context = json.dumps(target.get("knowledge_refs", [])[:6], ensure_ascii=False)
+                structured_context = json.dumps(analysis.get("structured", {}), ensure_ascii=False)
+                result = call_compatible_model(
+                    model_settings,
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "你是中国医疗机构服务项目投标文件撰写助手。只能使用提供的招标要求和知识库资料。"
+                                "不得编造公司资质、业绩、人员、金额、证书、响应时限或承诺；缺失信息写【待补充：具体信息】。"
+                                "输出可直接进入 Word 的正式 Markdown 章节，并保留可复核的原文依据。"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"请撰写章节《{target.get('title', '')}》，章节类型：{target.get('kind', '')}。\n"
+                                f"项目结构化信息：{structured_context}\n"
+                                f"招标原文要求：{requirement_context}\n"
+                                f"企业资料/历史标书检索片段：{knowledge_context}\n"
+                                "要求：以“## 章节标题”开头；逐条响应招标要求；引用企业材料时标注来源路径；"
+                                "不得把未知信息写成事实；结尾列出“待补充或人工确认事项”。"
+                            ),
+                        },
+                    ],
+                    max_tokens=min(int(model_settings.get("max_tokens", 4096)), 8192),
+                )
+                target["content"] = result["content"]
+                call_record = model_call_record(
+                    "标书章节生成",
+                    "success",
+                    model_settings,
+                    response_model=result["response_model"],
+                    usage=result["usage"],
+                    chapter_id=chapter_id,
+                    chapter_title=target.get("title", ""),
+                )
+                target["model_call"] = call_record
+                agent.save_chapters(out_dir, chapters)
+                append_model_call(out_dir, call_record)
+                task = update_task(project, "chapter-ready", 80, f"本章由 {result['response_model']} 生成，等待人工确认")
+            except ModelCallError as exc:
+                call_record = model_call_record("标书章节生成", "fallback", model_settings, error=str(exc), chapter_id=chapter_id)
+                target["model_call"] = call_record
+                agent.save_chapters(out_dir, chapters)
+                append_model_call(out_dir, call_record)
+                task = update_task(project, "chapter-ready", 80, f"AI 章节生成失败，已明确保留本地规则基线：{exc}")
+        else:
+            call_record = model_call_record(
+                "标书章节生成",
+                "local",
+                model_settings,
+                error="未启用外部模型或未选择具体章节",
+                chapter_id=chapter_id,
+            )
+            if target:
+                target["model_call"] = call_record
+                agent.save_chapters(out_dir, chapters)
+            append_model_call(out_dir, call_record)
+            task = update_task(project, "chapter-ready", 80, "本章使用本地规则基线，未调用外部模型")
+        self.send_json({"project": project, "chapters": chapters, "task": task, "model_call": call_record})
 
     def handle_save_chapter(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -566,6 +837,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0") or 0)
         data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
         project = data.get("project") or ""
+        model_settings = normalize_model_settings(data.get("model_settings"))
         if not project:
             self.send_error_json(400, "缺少项目名称")
             return
@@ -573,9 +845,55 @@ class Handler(BaseHTTPRequestHandler):
         analysis = read_json_file(out_dir / "01_招标文件解读.json", {})
         chapters = read_json_file(out_dir / "05_章节正文.json", [])
         review = agent.upgraded_review(analysis, chapters, read_json_file(library_store_path(), {}))
+        tender_text = read_project_text(project, "招标文件全文.txt")
+        bid_text = agent.chapters_to_markdown(chapters)
+        if external_model_ready(model_settings):
+            try:
+                result = call_compatible_model(
+                    model_settings,
+                    [
+                        {
+                            "role": "system",
+                            "content": (
+                                "你是严谨的中国招投标合规审查助手。先比较招标原文与投标正文，只报告有逐字证据的问题。"
+                                "不得编造页码、资格、承诺或法规结论。输出 JSON 对象，不要输出 Markdown。"
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                '输出结构：{"issues":[{"level":"高|中|低","location":"章节名称",'
+                                '"requirement_source":"招标文件逐字原文","bid_source":"投标正文逐字原文，可为空",'
+                                '"risk":"风险说明","action":"具体修改动作"}]}。'
+                                "重点检查资格、废标项、评分响应、商务条款、前后矛盾、模板残留和无依据承诺。"
+                                f"\n\n招标原文：\n{tender_text[:22000]}"
+                                f"\n\n投标正文：\n{bid_text[:22000]}"
+                            ),
+                        },
+                    ],
+                    max_tokens=4096,
+                )
+                ai_review = parse_json_content(result["content"])
+                accepted = merge_ai_review(review, ai_review, tender_text, bid_text)
+                call_record = model_call_record(
+                    "合规语义审查",
+                    "success",
+                    model_settings,
+                    response_model=result["response_model"],
+                    usage=result["usage"],
+                    accepted_issues=accepted,
+                )
+                task = update_task(project, "review-ready", 92, f"规则审查 + {result['response_model']} 语义审查完成")
+            except ModelCallError as exc:
+                call_record = model_call_record("合规语义审查", "fallback", model_settings, error=str(exc))
+                task = update_task(project, "review-ready", 92, f"AI 语义审查失败，已明确保留规则审查：{exc}")
+        else:
+            call_record = model_call_record("合规语义审查", "local", model_settings, error="未启用或未完整配置外部模型")
+            task = update_task(project, "review-ready", 92, "仅完成确定性规则审查，未调用外部模型")
+        review["model_call"] = call_record
+        append_model_call(out_dir, call_record)
         agent.write_review_report(review, out_dir)
-        task = update_task(project, "review-ready", 92, "查重、模板残留和废标专项检查完成")
-        self.send_json({"project": project, "review": review, "task": task})
+        self.send_json({"project": project, "review": review, "task": task, "model_call": call_record})
 
     def handle_export_final(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or 0)
